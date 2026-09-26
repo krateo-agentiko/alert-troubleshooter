@@ -107,13 +107,15 @@ class PythonRuntime(unittest.TestCase):
         describe = [e for e in retrieval if e["scope"] == "k8s_describe_resource"]
         self.assertEqual([e["outcome"] for e in describe], ["success"])
 
-    def test_the_failed_read_still_bounds_confidence(self):
+    def test_one_failed_read_among_good_ones_is_recorded_not_capped(self):
+        """`get composition` failed, every other k8s read worked: the error is on the record and
+        the declared 0.95 stands."""
         text, ledger = _analyze(PYTHON_TASK)
         _, v2 = report_v2.parse_structured_report(text, ledger)
         self.assertIn(("k8s", "k8s_get_resources", "errored"),
                       [(e["source"], e["scope"], e["outcome"]) for e in v2["evidence"]["retrieval"]])
-        self.assertLessEqual(float(v2["rootCause"]["confidence"]),
-                             report_v2.CONFIDENCE_CEILING["errored"])
+        self.assertNotIn("confidenceCap", v2["evidence"])
+        self.assertEqual(float(v2["rootCause"]["confidence"]), 0.95)
 
 
 class GoRuntime(unittest.TestCase):

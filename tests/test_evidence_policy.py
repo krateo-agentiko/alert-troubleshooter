@@ -121,6 +121,50 @@ class EvidencePolicy(unittest.TestCase):
             report_v2.apply_evidence_policy = orig
 
 
+K8S_OK = {"name": "k8s_get_resources", "failed": False,
+          "payload": "NAME   READY   UP-TO-DATE   AVAILABLE   AGE\nweb    0/1     1            0           25h"}
+K8S_ERRORED = {"name": "k8s_get_resources", "failed": True,
+               "payload": "[Kubernetes] get composition --all-namespaces -o wide failed: exit status 1"}
+K8S_EMPTY = {"name": "k8s_get_resources", "failed": False, "payload": "no items"}
+LOGS_OK = {"name": "run_query", "failed": False, "payload": '{"columns": ["Body"], "rows": [["x"]]}'}
+
+
+class EvidenceClassMix(unittest.TestCase):
+    """An error bounds confidence only when no call in its evidence class succeeded; a denial
+    bounds it regardless."""
+
+    def _conf(self, ledger, declared=0.9):
+        _, v2 = parse_structured_report(_reply(_block(declared)), ledger)
+        return float(v2["rootCause"]["confidence"]), v2
+
+    def test_an_error_beside_a_success_does_not_cap(self):
+        conf, v2 = self._conf([K8S_OK, K8S_ERRORED])
+        self.assertEqual(conf, 0.9)
+        self.assertNotIn("confidenceCap", v2["evidence"])
+        self.assertIn("errored", [e["outcome"] for e in v2["evidence"]["retrieval"]],
+                      "the failed call must stay on the record")
+
+    def test_an_error_beside_an_empty_result_does_not_cap(self):
+        """An empty result is a call that worked."""
+        conf, _ = self._conf([K8S_EMPTY, K8S_ERRORED])
+        self.assertEqual(conf, 0.9)
+
+    def test_errors_alone_cap(self):
+        conf, v2 = self._conf([K8S_ERRORED, K8S_ERRORED])
+        self.assertLessEqual(conf, report_v2.CONFIDENCE_CEILING["errored"])
+        self.assertEqual(v2["evidence"]["coverage"], "partial")
+
+    def test_a_success_in_another_class_does_not_lift_the_cap(self):
+        conf, v2 = self._conf([LOGS_OK, K8S_ERRORED])
+        self.assertLessEqual(conf, report_v2.CONFIDENCE_CEILING["errored"])
+        self.assertIn("k8s reads failed", v2["evidence"]["statement"])
+
+    def test_a_denial_caps_even_beside_a_success(self):
+        conf, v2 = self._conf([K8S_OK] + DENIED_LEDGER)
+        self.assertLessEqual(conf, report_v2.CONFIDENCE_CEILING["denied"])
+        self.assertEqual(v2["evidence"]["coverage"], "degraded")
+
+
 class HandlerToolLedger(unittest.TestCase):
     """The plumbing half: the denial has to reach report_v2 at all."""
 
