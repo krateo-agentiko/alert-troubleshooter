@@ -97,8 +97,8 @@ def _service_jwt():
             claims = json.loads(base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4)))
             _jwt_cache.update(token=jwt, exp=float(claims.get("exp") or (time.time() + 300)))
             return jwt
-        except Exception as e:  # degrade to unauthenticated rather than failing the analysis
-            print(f"[authn] service-JWT exchange failed ({e}); calling A2A unauthenticated", flush=True)
+        except Exception as e:  # degrade to no JWT; each caller decides what that means
+            print(f"[authn] service-JWT exchange failed ({e}); continuing without a JWT", flush=True)
             return ""
 
 
