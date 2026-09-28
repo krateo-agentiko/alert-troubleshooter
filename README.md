@@ -1,11 +1,11 @@
-# krateo-alert-troubleshooter
+# krateo-alert-provider
 
 ## What is this
 Turns a firing Krateo observability **Alert** into **Incidents**, one per problem, each with an
 **incident-agent root-cause analysis**, in the background — no browser required.
 
 ```
-every 60 s, Alert is ALERT in HyperDX → krateo-alert-troubleshooter
+every 60 s, Alert is ALERT in HyperDX → krateo-alert-provider
     → an open incident of the same problem? (autopilot compares)  yes → status.firings++
                                                                   no  → new Incident → A2A call to incident-agent
                                                                         → status: analysis + howToFix scripts, state Open
@@ -27,7 +27,7 @@ HyperDX's webhook is acked (202) and logged; the reconciler's pass is what fires
 
 ## Build
 Image is built + pushed by CI (`.github/workflows/release.yaml`) to
-`ghcr.io/krateo-platformops/alert-troubleshooter` on push to `main` / tags. No local docker push.
+`ghcr.io/krateo-platformops/alert-provider` on push to `main` / tags. No local docker push.
 
 ## Deploy
 ```sh
@@ -43,7 +43,7 @@ The reconciler creates the HyperDX webhook and alerts from the `Alert` CRs.
 
 ## Install
 ```sh
-helm install alert-troubleshooter oci://ghcr.io/krateo-platformops/charts/alert-troubleshooter --version <tag> -n krateo-system
+helm install alert-provider oci://ghcr.io/krateo-platformops/charts/alert-provider --version <tag> -n krateo-system
 ```
 
 ## Configure

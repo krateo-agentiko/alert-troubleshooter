@@ -421,9 +421,9 @@ CONFIDENCE_CEILING = {"denied": 0.40, "errored": 0.60}
 NO_EVIDENCE_CEILING = 0.20  # nothing cited and nothing read: no sources, no analyzed resources
 
 # The analyzer's own identity as it appears in an apiserver refusal ("User
-# \"system:serviceaccount:krateo-system:krateo-alert-troubleshooter\" cannot list …"). Used to tell
+# \"system:serviceaccount:krateo-system:krateo-alert-provider\" cannot list …"). Used to tell
 # a denial WE hit from one we are REPORTING ON — see _self_denial.
-ANALYZER_IDENTITY = "krateo-alert-troubleshooter"
+ANALYZER_IDENTITY = "krateo-alert-provider"
 
 _CLASS_LABEL = {"k8s": "k8s reads", "logs": "log queries", "metrics": "metrics reads",
                 "repo": "repository reads", "other": "some reads"}

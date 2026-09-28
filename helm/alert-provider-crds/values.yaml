@@ -1,0 +1,2 @@
+# Default values for alert-provider-crds (the dedicated CRD chart).
+# The CRDs are static; there are no tunable values.

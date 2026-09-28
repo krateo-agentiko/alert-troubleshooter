@@ -1,4 +1,4 @@
-# alert-troubleshooter
+# alert-provider
 Observability plumbing (krateo-platformops): a firing Alert -> Incidents
 (observability.krateo.io/v1alpha1, incident-controller's CRD), one per problem, each with an
 incident-agent A2A root-cause analysis. It calls agents; it is not one.
@@ -22,6 +22,6 @@ docs/api.md: the Alert CRD, the Incident fields written, HTTP surface
 report_v2.py: the RCA output contract; howToFix = {precondition, apply, verify, rollback} bash scripts, exit 0 gone / 1 holds / else unknown, the first three or none, rollback optional
 docs/examples.md: runnable examples
 docs/release.md: bare-semver build/release
-helm/alert-troubleshooter/: the chart
+helm/alert-provider/: the chart
 Alert.status.okSince: when the alert last turned OK, unset otherwise; display only.
 ClusterRole krateo-alert-viewer: get/list/watch on Alerts for portal users (the portal reads with the user's token); shipped with no binding, admins bind it to groups.

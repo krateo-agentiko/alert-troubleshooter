@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Bearer-auth reconciler for Alert CRs (alerts.observability.krateo.io).
 
-Runs as a background thread in the krateo-alert-troubleshooter process:
+Runs as a background thread in the krateo-alert-provider process:
 
   every RECONCILE_INTERVAL seconds:
-    ensure the shared webhook (-> this troubleshooter's /webhook) ->
+    ensure the shared webhook (-> this alert-provider's /webhook) ->
     for each `where` Alert CR:
         being deleted (deletionTimestamp) -> delete its HyperDX alert+dashboard, drop the finalizer
         else, no status.hyperdxAlertId    -> create dashboard-tile + alert, record ids in status
@@ -36,9 +36,9 @@ from handler import _k8s, _now  # reuse the apiserver helpers
 GROUP, VERSION, PLURAL = "observability.krateo.io", "v1alpha1", "alerts"
 NAMESPACE = os.environ.get("NAMESPACE", "krateo-system")
 INTERVAL = int(os.environ.get("RECONCILE_INTERVAL", "60"))
-WEBHOOK_NAME = os.environ.get("WEBHOOK_NAME", "krateo-autopilot")
+WEBHOOK_NAME = os.environ.get("WEBHOOK_NAME", "krateo-alert-provider")
 WEBHOOK_TARGET = os.environ.get(
-    "WEBHOOK_TARGET_URL", "http://krateo-alert-troubleshooter.krateo-system.svc:8080/webhook")
+    "WEBHOOK_TARGET_URL", "http://krateo-alert-provider.krateo-system.svc:8080/webhook")
 # Default Alert CRs to seed on startup (JSON array of specs+name). The composition ships these here
 # rather than as chart CRs — Helm can't validate a CR before its CRD is installed in the same pass.
 DEFAULT_ALERTS_JSON = os.environ.get("DEFAULT_ALERTS_JSON", "")
@@ -344,8 +344,8 @@ def reconcile_once(hdx):
     # can never read an answer from a previous cycle.
     hdx.invalidate_cache()
     source = hdx.first_source()
-    webhook_id, recreated = hdx.ensure_webhook(WEBHOOK_NAME, WEBHOOK_TARGET,
-                                               description="Krateo Autopilot auto-troubleshooter")
+    webhook_id, recreated = hdx.ensure_webhook(
+        WEBHOOK_NAME, WEBHOOK_TARGET, description="Krateo alert-provider: the HyperDX alerts' channel")
     if recreated:
         # the webhook id changed -> alerts referencing the old id would notify a dead channel.
         # Drop the HyperDX alerts we manage + reset their CR status so they rebuild on this webhook.

@@ -1,22 +1,21 @@
-# krateo-alert-troubleshooter — the HyperDX-alert → Incident handler. Its reconciler mirrors each
+# krateo-alert-provider — the HyperDX-alert → Incident handler. Its reconciler mirrors each
 # Alert's HyperDX state every pass; a firing counts on the open incident the comparison agent
 # (config.compareA2aUrl, autopilot by default) judges the same problem, or opens an Incident CR
 # (incident-controller's CRD) whose RCA the RCA agent (config.autopilotA2aUrl, incident-agent by
 # default) writes. HyperDX's webhook posts to
-# http://krateo-alert-troubleshooter.krateo-system.svc:8080/webhook, which only acknowledges. Image is tag-driven (values.image.tag = chart
-# appVersion), a real tag published (from main@a0bfebf) after the arm64 build fix — verified multi-arch
-# (linux/amd64 + linux/arm64) with `docker buildx imagetools inspect`. Bump this version tag
-# alongside any future handler.py/hyperdx*.py change that needs to reach the cluster.
+# http://krateo-alert-provider.krateo-system.svc:8080/webhook, which only acknowledges. Image is
+# tag-driven (values.image.tag = chart appVersion), multi-arch (linux/amd64 + linux/arm64). Bump
+# this version tag alongside any handler.py/hyperdx*.py change that needs to reach the cluster.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: krateo-alert-troubleshooter
+  name: krateo-alert-provider
   namespace: krateo-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: krateo-alert-troubleshooter
+  name: krateo-alert-provider
   namespace: krateo-system
 rules:
   # the handler opens Incidents for firing alerts, counts firings and writes the RCA
@@ -35,24 +34,24 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: krateo-alert-troubleshooter
+  name: krateo-alert-provider
   namespace: krateo-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: krateo-alert-troubleshooter
+  name: krateo-alert-provider
 subjects:
   - kind: ServiceAccount
-    name: krateo-alert-troubleshooter
+    name: krateo-alert-provider
     namespace: krateo-system
 ---
-# The cluster-wide READ of the analyzer identity, group krateo:alert-troubleshooter: the RCA's k8s
+# The cluster-wide READ of the analyzer identity, group krateo:alert-provider: the RCA's k8s
 # tool calls. The namespaced Role above covers the pod's own writes (incidents, alerts, the
 # hyperdx-token Secret).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: krateo-alert-troubleshooter-observer
+  name: krateo-alert-provider-observer
 rules:
   # CLUSTER-WIDE READ. The RCA is asked to explain arbitrary cluster failures, so it must be able to
   # READ arbitrary cluster objects. Without this it could read nothing but its own CRDs, and every
@@ -81,36 +80,36 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: krateo-alert-troubleshooter-observer
+  name: krateo-alert-provider-observer
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: krateo-alert-troubleshooter-observer
+  name: krateo-alert-provider-observer
 subjects:
   # The RCA's k8s tool calls, which do NOT arrive as this ServiceAccount. incident-agent runs them
   # through the agentgateway cert-replay hop: it swaps the caller's authn JWT for the client cert in
   # <user>-clientconfig, so the apiserver sees that cert's CN as the User and its O= entries as Groups.
-  # The cert carries O=krateo:alert-troubleshooter (serviceaccount-authn.yaml spec.groups), never
+  # The cert carries O=krateo:alert-provider (serviceaccount-authn.yaml spec.groups), never
   # system:serviceaccount:..., so only a Group subject authorizes the read granted above.
   - kind: Group
-    name: krateo:alert-troubleshooter
+    name: krateo:alert-provider
     apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: krateo-alert-troubleshooter
+  name: krateo-alert-provider
   namespace: krateo-system
-  labels: { app: krateo-alert-troubleshooter }
+  labels: { app: krateo-alert-provider }
 spec:
   replicas: 1
   selector:
-    matchLabels: { app: krateo-alert-troubleshooter }
+    matchLabels: { app: krateo-alert-provider }
   template:
     metadata:
-      labels: { app: krateo-alert-troubleshooter }
+      labels: { app: krateo-alert-provider }
     spec:
-      serviceAccountName: krateo-alert-troubleshooter
+      serviceAccountName: krateo-alert-provider
       securityContext:
         seccompProfile: { type: RuntimeDefault }
       volumes:
@@ -132,7 +131,7 @@ spec:
             - containerPort: 8080
           env:
             # All runtime config is overridable via values.config.* (installer:
-            # componentValues.alert-troubleshooter.config.*); defaults live in values.yaml and match the
+            # componentValues.alert-provider.config.*); defaults live in values.yaml and match the
             # in-cluster krateo-system layout. NAMESPACE is the release namespace (its Alerts and Incidents).
             - name: NAMESPACE
               value: {{ .Release.Namespace | quote }}
@@ -181,13 +180,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: krateo-alert-troubleshooter
+  name: krateo-alert-provider
   namespace: krateo-system
 spec:
   # Headless: this bench cluster's ClusterIP range is exhausted; a headless service still
-  # resolves krateo-alert-troubleshooter.krateo-system.svc → the pod IP for HyperDX's webhook POST.
+  # resolves krateo-alert-provider.krateo-system.svc → the pod IP for HyperDX's webhook POST.
   clusterIP: None
-  selector: { app: krateo-alert-troubleshooter }
+  selector: { app: krateo-alert-provider }
   ports:
     - port: 8080
       targetPort: 8080

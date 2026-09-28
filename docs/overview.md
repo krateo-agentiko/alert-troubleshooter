@@ -1,12 +1,12 @@
 ---
 type: Architecture
-title: alert-troubleshooter — architecture
+title: alert-provider — architecture
 description: How a firing alert becomes Incidents, one per problem, each with an incident-agent root-cause analysis.
 tags: [observability, alerts, autopilot]
 timestamp: 2026-08-20T00:00:00Z
 ---
 
-# alert-troubleshooter
+# alert-provider
 
 A controller (not an agent). The reconciler mirrors each `Alert`'s HyperDX state about every
 60 s (`config.reconcileInterval`), and each pass that finds it ALERT is one firing. A firing is

@@ -1,4 +1,4 @@
-# Krateo COMPONENT release — alert-troubleshooter, IMAGE build.
+# Krateo COMPONENT release — alert-provider, IMAGE build.
 #
 # Adopts the SHARED org reusable (krateo-platformops/.github component-image-build.yaml@main),
 # identical to frontend/portal — one source of truth, no per-repo drift. This replaces the former
@@ -6,8 +6,8 @@
 # with `provenance: false` and no SBOM (it could not schedule on arm64 nodes). The reusable builds
 # a multi-arch manifest (default linux/amd64,linux/arm64) with provenance + SBOM.
 #
-# The Dockerfile is at the repo ROOT, so context ".". The module name "alert-troubleshooter" derives
-# the image ghcr.io/<owner>/alert-troubleshooter:<tag> — the same name the chart references. No build
+# The Dockerfile is at the repo ROOT, so context ".". The module name "alert-provider" derives
+# the image ghcr.io/<owner>/alert-provider:<tag> — the same name the chart references. No build
 # args: the Dockerfile declares no ARGs and the image tag is the git tag, applied by the reusable.
 #
 # NOTE: the old release-image.yaml also ran a post-build /healthz smoke (`docker run` the amd64 image
@@ -27,4 +27,4 @@ jobs:
       contents: read
       packages: write
     with:
-      modules: '[{"mod":"alert-troubleshooter","context":"."}]'
+      modules: '[{"mod":"alert-provider","context":"."}]'

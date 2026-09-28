@@ -9,14 +9,14 @@ timestamp: 2026-08-20T00:00:00Z
 # Usage
 
 ```sh
-helm install alert-troubleshooter \
-  oci://ghcr.io/krateo-platformops/charts/alert-troubleshooter --version <tag> \
+helm install alert-provider \
+  oci://ghcr.io/krateo-platformops/charts/alert-provider --version <tag> \
   --namespace krateo-system
 ```
 
 Apply `Alert` CRs (see [`examples/alerts/`](../examples/alerts/)). The reconciler creates one
 HyperDX alert per CR, named after its `metadata.name`, and the shared webhook that posts to
-`http://krateo-alert-troubleshooter.krateo-system.svc:8080/webhook`, which only acknowledges. Every
+`http://krateo-alert-provider.krateo-system.svc:8080/webhook`, which only acknowledges. Every
 pass (60 s) that finds a HyperDX alert ALERT is a firing of its CR. Each firing is recorded on an
 `Incident`, so incident-controller's CRD chart must be installed first; without it a firing is
 logged and lost. Comparing a firing with the alert's open incidents calls the autopilot agent

@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema",
-  "title": "Alert Troubleshooter",
+  "title": "Alert Provider",
   "description": "Turns each firing of an observability Alert into an Incident with an incident-agent root-cause analysis and its how-to-fix scripts.",
   "type": "object",
   "additionalProperties": false,
@@ -57,7 +57,7 @@
         "repository": {
           "type": "string",
           "title": "Image repository",
-          "default": "ghcr.io/krateo-platformops/alert-troubleshooter"
+          "default": "ghcr.io/krateo-platformops/alert-provider"
         },
         "tag": {
           "type": "string",

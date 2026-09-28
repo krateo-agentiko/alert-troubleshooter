@@ -1,5 +1,5 @@
 apiVersion: v2
-name: alert-troubleshooter
+name: alert-provider
 description: Turns each firing of an observability Alert into an Incident with an incident-agent root-cause analysis and its how-to-fix scripts.
 type: application
 version: CHART_VERSION

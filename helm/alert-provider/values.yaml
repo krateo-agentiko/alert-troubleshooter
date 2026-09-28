@@ -1,7 +1,7 @@
 # The controller image. tag defaults to the chart appVersion (= release tag), so chart and
 # image move together; override to pin.
 image:
-  repository: ghcr.io/krateo-platformops/alert-troubleshooter
+  repository: ghcr.io/krateo-platformops/alert-provider
   tag: ""
 
 config:
@@ -48,7 +48,7 @@ config:
     where: >-
       (positionCaseInsensitive(Body, 'Reconciler error') > 0
        OR JSONExtractString(Body, 'object', 'reason') = 'CannotObserveExternalResource')
-      AND ServiceName NOT IN ('krateo-observability', 'krateo-alert-troubleshooter',
+      AND ServiceName NOT IN ('krateo-observability', 'krateo-alert-provider',
           'krateo-clickstack', 'krateo-clickstack-clickhouse-clickhouse', 'clickhouse-mcp-server',
           'incident-agent', 'krateo-autopilot', 'kagent', 'repo-mcp-server')
     interval: 15m

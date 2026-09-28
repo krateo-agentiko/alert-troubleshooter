@@ -1,7 +1,7 @@
 # hyperdx-key-bootstrap — provisions the HyperDX team API key into the `hyperdx-api-token`
 # Secret headlessly (register/login → GET /api/team). The installer creates the admin-creds
 # Secret (generated password) and applies this Job; re-runs are safe (idempotent via
-# /api/installation). Uses the krateo-alert-troubleshooter SA (has secrets create/patch).
+# /api/installation). Uses the krateo-alert-provider SA (has secrets create/patch).
 #
 # The `hyperdx-admin-creds` Secret is NOT shipped here (never commit a password) — the
 # installer generates it, e.g.:
@@ -14,7 +14,7 @@
 # name with the image tag makes each release a NEW Job (helm creates it and prunes the previous one),
 # so there is never an in-place patch of an immutable field. Within a release the name is stable, so
 # steady-state reconciles are a no-op. (A pre-upgrade Helm hook would also work but can't be used here:
-# the Job runs as the krateo-alert-troubleshooter SA — a main-phase resource a pre-install hook would
+# the Job runs as the krateo-alert-provider SA — a main-phase resource a pre-install hook would
 # race on a fresh install.)
 apiVersion: batch/v1
 kind: Job
@@ -28,7 +28,7 @@ spec:
     metadata:
       labels: { app: hyperdx-key-bootstrap }
     spec:
-      serviceAccountName: krateo-alert-troubleshooter
+      serviceAccountName: krateo-alert-provider
       securityContext:
         seccompProfile: { type: RuntimeDefault }
       restartPolicy: OnFailure

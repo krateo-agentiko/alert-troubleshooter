@@ -9,7 +9,7 @@ timestamp: 2026-08-20T00:00:00Z
 # Webhook example
 
 ```sh
-curl -XPOST http://krateo-alert-troubleshooter.krateo-system.svc:8080/webhook -d @alert.json
+curl -XPOST http://krateo-alert-provider.krateo-system.svc:8080/webhook -d @alert.json
 ```
 
 `alert.json` is the body HyperDX sends: `alertName` is the notification title, a state emoji plus

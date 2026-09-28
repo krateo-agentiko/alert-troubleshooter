@@ -2,8 +2,8 @@
 # frontend/portal, so "the chart release workflow" is structural (one reusable) instead of a
 # ~130-line self-contained copy each repo keeps in step by hand (which is what the former
 # release-tag.yaml was). The shared workflow substitutes CHART_VERSION + bakes appVersion from the
-# tag, and GATES the publish on every chart-referenced image existing: the alert-troubleshooter
-# chart references ghcr.io/<owner>/alert-troubleshooter:<appVersion=tag>, built by release-tag.yaml,
+# tag, and GATES the publish on every chart-referenced image existing: the alert-provider
+# chart references ghcr.io/<owner>/alert-provider:<appVersion=tag>, built by release-tag.yaml,
 # so this waits for that image before publishing (no ImagePullBackOff-after-publish).
 name: release-oci
 

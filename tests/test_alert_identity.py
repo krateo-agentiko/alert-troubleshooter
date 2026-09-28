@@ -105,7 +105,7 @@ def _client(api):
 def _seed_alert(api, dash_name, alert_name, where):
     """A pre-existing alert on the reconciler's own webhook, as on a running cluster."""
     hdx = _client(api)
-    wid, _ = hdx.ensure_webhook("krateo-autopilot", "http://x/webhook")
+    wid, _ = hdx.ensure_webhook("krateo-alert-provider", "http://x/webhook")
     dash, tile = hdx.ensure_dashboard_tile(dash_name, {"id": "src-1"}, where)
     return hdx.ensure_alert(alert_name, dash, tile, wid, interval="15m", threshold=2,
                             message="m")["id"]
@@ -259,20 +259,20 @@ class TestWebhookTemplate(unittest.TestCase):
 
     def test_an_existing_webhook_with_an_old_body_is_updated_in_place(self):
         api = FakeHyperDXAPI()
-        api.webhooks["w1"] = {"id": "w1", "name": "krateo-autopilot", "service": "generic",
+        api.webhooks["w1"] = {"id": "w1", "name": "krateo-alert-provider", "service": "generic",
                               "url": "http://x/****",
                               "body": '{"alertName":"{{title}}","state":"ALERT","source":"hyperdx-alert"}'}
         hdx = _client(api)
-        self.assertEqual(hdx.ensure_webhook("krateo-autopilot", "http://x/webhook"), ("w1", False))
+        self.assertEqual(hdx.ensure_webhook("krateo-alert-provider", "http://x/webhook"), ("w1", False))
         self.assertEqual(api.webhooks["w1"]["body"], hyperdx_v2.DEFAULT_WEBHOOK_BODY)
         self.assertEqual(api.writes, [("PUT", "webhooks", "w1")])
         api.writes.clear()
-        self.assertEqual(hdx.ensure_webhook("krateo-autopilot", "http://x/webhook"), ("w1", False))
+        self.assertEqual(hdx.ensure_webhook("krateo-alert-provider", "http://x/webhook"), ("w1", False))
         self.assertEqual(api.writes, [])
 
     def test_a_missing_webhook_is_created(self):
         api = FakeHyperDXAPI()
-        wid, created = _client(api).ensure_webhook("krateo-autopilot", "http://x/webhook")
+        wid, created = _client(api).ensure_webhook("krateo-alert-provider", "http://x/webhook")
         self.assertTrue(created)
         self.assertEqual(api.webhooks[wid]["body"], hyperdx_v2.DEFAULT_WEBHOOK_BODY)
 

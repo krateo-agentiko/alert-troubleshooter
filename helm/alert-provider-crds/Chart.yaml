@@ -1,6 +1,6 @@
 apiVersion: v2
-name: alert-troubleshooter-crds
-description: Krateo PlatformOps alert-troubleshooter CRD (Alert)
+name: alert-provider-crds
+description: Krateo PlatformOps alert-provider CRD (Alert)
 type: application
 
 # Dedicated CRD chart — the platform golden rule (every other component ships a *-crds chart:
@@ -9,7 +9,7 @@ type: application
 # bump no longer triggers a CRD-version migration of this CRD, so it can never re-migrate or (on a
 # handover mis-fire) tear it down. See core-provider#89.
 #
-# Versioned with the SAME release tag as the main chart (alert-troubleshooter): release-tag.yaml
+# Versioned with the SAME release tag as the main chart (alert-provider): release-tag.yaml
 # substitutes the CHART_VERSION placeholder with the git tag, so one repo tag publishes both charts.
 version: CHART_VERSION
 

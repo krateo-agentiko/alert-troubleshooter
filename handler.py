@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""krateo-alert-troubleshooter — turns a firing alert into Incidents, each with a root-cause analysis.
+"""krateo-alert-provider — turns a firing alert into Incidents, each with a root-cause analysis.
 
 The reconciler mirrors every Alert's HyperDX state about every 60 s and calls fire() for each one
 that is ALERT. fire() counts the firing on an incident that covers it (see _pick) or opens a new
@@ -25,7 +25,7 @@ import report_v2  # the structured-report contract: prompt instructions + defens
 
 # --- config (env, with in-cluster defaults) ---
 NAMESPACE = os.environ.get("NAMESPACE", "krateo-system")
-AUTOPILOT_A2A = os.environ.get("AUTOPILOT_A2A_URL", "http://krateo-autopilot.krateo-system.svc:8080/")
+AUTOPILOT_A2A = os.environ.get("AUTOPILOT_A2A_URL", "http://incident-agent.krateo-system.svc:8080/")
 APISERVER = os.environ.get("APISERVER", "https://kubernetes.default.svc")
 SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 GROUP, VERSION = "observability.krateo.io", "v1alpha1"
@@ -282,7 +282,7 @@ def _finish(ns, name, status):
     raise RuntimeError(f"incident {ns}/{name}: no status write succeeded in {WRITE_ATTEMPTS} attempts")
 
 
-INTERRUPTED = "The analysis was interrupted: the troubleshooter restarted before it finished."
+INTERRUPTED = "The analysis was interrupted: the alert-provider restarted before it finished."
 
 
 def recover_interrupted(ns=NAMESPACE):
@@ -564,6 +564,6 @@ if __name__ == "__main__":
         import reconciler  # imported here so the webhook path has no hard dep on it
         threading.Thread(target=reconciler.run_forever, daemon=True).start()
     port = int(os.environ.get("PORT", "8080"))
-    print(f"krateo-alert-troubleshooter listening on :{port} → RCA {AUTOPILOT_A2A}, compare "
+    print(f"krateo-alert-provider listening on :{port} → RCA {AUTOPILOT_A2A}, compare "
           f"{COMPARE_A2A}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
