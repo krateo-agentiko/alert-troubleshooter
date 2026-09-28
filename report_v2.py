@@ -530,6 +530,16 @@ def _retrieval(v):
     return out
 
 
+def _tool_success_outcome(text):
+    """The outcome of a tool call the runtime did NOT flag as failed. Its text is DATA — a pod's
+    `timeout=1s` probe, an Incident whose prompt quotes "Forbidden: cannot list pods" — so only a
+    refusal that names the analyzer itself, or an empty result, moves it off success."""
+    if _DENIAL_RE.search(text) and any(ANALYZER_IDENTITY in s.lower()
+                                       for s in _SUBJECT_RE.findall(text)):
+        return "denied"
+    return "empty" if _EMPTY_RE.search(text) else "success"
+
+
 def _from_tool_ledger(tool_ledger):
     """Ground truth: the tool RESULTS the handler lifted off the A2A stream. `failed` means the
     call itself returned an error payload, so a refusal in it is unambiguously ours."""
@@ -544,7 +554,7 @@ def _from_tool_ledger(tool_ledger):
         if t.get("failed"):
             outcome = "denied" if _DENIAL_RE.search(payload) else "errored"
         else:
-            outcome = _classify_outcome(payload)
+            outcome = _tool_success_outcome(payload)
         e = {"source": _tool_class(name), "scope": name, "outcome": outcome}
         if outcome != "success":  # a success needs no explanation; keep the CR status small
             e["detail"] = payload[:512]
@@ -581,14 +591,23 @@ def build_retrieval_ledger(declared, missing_context=(), tool_ledger=None):
 
 
 def _worst_by_class(ledger):
-    """Worst outcome seen per evidence class. A class read twice, once fine and once refused, is
-    still missing whatever the refused read held."""
+    """The outcome that governs each evidence class: the worst one seen, with one exception.
+
+    A denial governs even beside a success — a class read twice, once fine and once refused, is
+    still missing whatever the refused read held. An error governs only when NO call in its class
+    succeeded (`success` or `empty`): one failed exploratory call, such as a mistyped resource
+    kind, among reads that worked leaves nothing the analysis depended on missing."""
     rank = {"success": 0, "empty": 1, "errored": 2, "denied": 3}
-    worst = {}
+    seen = {}
     for e in ledger:
-        c, o = e.get("source") or "other", e.get("outcome") or "success"
-        if rank.get(o, 0) >= rank.get(worst.get(c, "success"), 0):
-            worst[c] = o
+        seen.setdefault(e.get("source") or "other", []).append(e.get("outcome") or "success")
+    worst = {}
+    for c, outcomes in seen.items():
+        if any(o in ("success", "empty") for o in outcomes):
+            outcomes = [o for o in outcomes if o != "errored"]
+        for o in outcomes:
+            if rank.get(o, 0) >= rank.get(worst.get(c, "success"), 0):
+                worst[c] = o
     return worst
 
 
@@ -631,8 +650,9 @@ def apply_evidence_policy(prose, v2, ledger):
     """Bound the reported confidence by the evidence actually retrieved, and SAY SO in the report.
 
     Returns (prose, v2), mutating v2 in place:
-      * caps rootCause.confidence at the ceiling the worst retrieval outcome allows — the declared
-        value is PRESERVED under evidence.declaredConfidence, never quietly replaced;
+      * caps rootCause.confidence at the ceiling each class's governing outcome allows (see
+        _worst_by_class) — the declared value is PRESERVED under evidence.declaredConfidence,
+        never quietly replaced;
       * records evidence.{coverage,statement,retrieval} so "denied" and "empty" stop collapsing
         into the same absent section;
       * prepends a degraded-analysis banner to the prose and repeats it as the first
