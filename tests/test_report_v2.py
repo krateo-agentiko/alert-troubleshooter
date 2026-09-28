@@ -28,6 +28,9 @@ VERIFY = ("#!/usr/bin/env bash\n# Fixed once payment-api is off v9 and available
           "d=$(kubectl get deployment payment-api -n prod -o json) || exit 2\n"
           "jq -e '.status.availableReplicas == .spec.replicas' <<<\"$d\" >/dev/null\n"
           "case $? in 0) exit 0 ;; 1) exit 1 ;; *) exit 2 ;; esac\n")
+ROLLBACK = ("#!/usr/bin/env bash\n# Undo apply: put payment-api back on v9, the tag read before the fix.\n"
+            "kubectl set image deployment/payment-api api=payment:v9 -n prod\n")
+FIX = {"precondition": PRECONDITION, "apply": APPLY, "verify": VERIFY, "rollback": ROLLBACK}
 
 VALID_BLOCK = {
     "analyzedResources": [
@@ -45,7 +48,7 @@ VALID_BLOCK = {
         {"step": 2, "statement": "Tag v9 does not exist in the registry", "evidenceRefs": [1]},
     ],
     "rootCause": {"statement": "Bad image tag v9", "confidence": 0.85, "category": "image"},
-    "howToFix": {"precondition": PRECONDITION, "apply": APPLY, "verify": VERIFY},
+    "howToFix": FIX,
 }
 
 
@@ -65,8 +68,7 @@ class TestValidV2(unittest.TestCase):
         self.assertEqual(v2["reasoningTrace"][0]["evidenceRefs"], [0, 1])
         self.assertEqual(v2["rootCause"],
                          {"statement": "Bad image tag v9", "category": "image", "confidence": "0.85"})
-        self.assertEqual(v2["howToFix"],
-                         {"precondition": PRECONDITION, "apply": APPLY, "verify": VERIFY})
+        self.assertEqual(v2["howToFix"], FIX)
 
     def test_unfenced_json_tag_still_parses(self):
         prose, v2 = parse_structured_report(answer(VALID_BLOCK, fence=""))  # bare ``` fence
@@ -176,8 +178,9 @@ class TestSanitizers(unittest.TestCase):
 
 
 class TestHowToFix(unittest.TestCase):
-    """status.howToFix: all three scripts or none, never truncated, and a dropped set is said in
-    missingContext when there is a root cause to fix."""
+    """status.howToFix: precondition, apply and verify or none, never truncated, and a dropped set
+    is said in missingContext when there is a root cause to fix. Rollback is kept when usable and
+    otherwise left out alone, said in missingContext."""
 
     NOTE = ": the incident has no scripts to check or fix it."
 
@@ -191,10 +194,30 @@ class TestHowToFix(unittest.TestCase):
 
     def test_scripts_are_kept_verbatim_with_one_trailing_newline(self):
         v2 = self._parse({"precondition": "\n  " + PRECONDITION + "\n\n", "apply": APPLY,
-                          "verify": VERIFY.rstrip("\n")})
+                          "verify": VERIFY.rstrip("\n"), "rollback": ROLLBACK})
+        self.assertEqual(v2["howToFix"], FIX)
+        self.assertEqual(v2["missingContext"], ["gap"])
+
+    def test_a_missing_rollback_keeps_the_fix_and_is_noted(self):
+        v2 = self._parse({"precondition": PRECONDITION, "apply": APPLY, "verify": VERIFY})
         self.assertEqual(v2["howToFix"],
                          {"precondition": PRECONDITION, "apply": APPLY, "verify": VERIFY})
-        self.assertEqual(v2["missingContext"], ["gap"])
+        self.assertEqual(v2["missingContext"],
+                         ["gap", "No usable rollback (missing): undoing apply is left to whoever "
+                                 "runs it."])
+
+    def test_an_over_long_rollback_is_left_out_never_truncated(self):
+        long_rollback = "#!/usr/bin/env bash\n" + "x" * report_v2.SCRIPT_MAX_CHARS
+        v2 = self._parse({**FIX, "rollback": long_rollback})
+        self.assertNotIn("rollback", v2["howToFix"])
+        self.assertIn(f"rollback (over {report_v2.SCRIPT_MAX_CHARS} characters)",
+                      v2["missingContext"][-1])
+
+    def test_a_rollback_alone_is_no_fix(self):
+        v2 = self._parse({"rollback": ROLLBACK})
+        self.assertNotIn("howToFix", v2)
+        self.assertEqual(v2["missingContext"][-1], "No usable howToFix (precondition missing; "
+                                                   "apply missing; verify missing)" + self.NOTE)
 
     def test_a_partial_set_is_dropped_whole_and_the_report_kept(self):
         v2 = self._parse({"precondition": PRECONDITION, "apply": APPLY})
@@ -218,10 +241,9 @@ class TestHowToFix(unittest.TestCase):
         v2 = self._parse({"precondition": PRECONDITION.splitlines(), "apply": APPLY, "verify": VERIFY})
         self.assertEqual(v2["howToFix"]["precondition"], PRECONDITION)
 
-    def test_keys_other_than_the_three_scripts_are_dropped(self):
-        v2 = self._parse({"precondition": PRECONDITION, "apply": APPLY, "verify": VERIFY,
-                          "description": "roll back"})
-        self.assertEqual(sorted(v2["howToFix"]), ["apply", "precondition", "verify"])
+    def test_keys_other_than_the_four_scripts_are_dropped(self):
+        v2 = self._parse({**FIX, "description": "roll back"})
+        self.assertEqual(sorted(v2["howToFix"]), ["apply", "precondition", "rollback", "verify"])
 
     def test_a_non_object_is_dropped(self):
         v2 = self._parse("kubectl set image deployment/payment-api api=payment:v8")
@@ -235,10 +257,9 @@ class TestHowToFix(unittest.TestCase):
         self.assertEqual(v2["missingContext"], ["could not read pods"])
 
     def test_how_to_fix_alone_is_a_structured_block(self):
-        how = {"precondition": PRECONDITION, "apply": APPLY, "verify": VERIFY}
-        prose, v2 = parse_structured_report(answer({"howToFix": how}))
+        prose, v2 = parse_structured_report(answer({"howToFix": FIX}))
         self.assertEqual(prose, PROSE)
-        self.assertEqual(v2, {"howToFix": how})
+        self.assertEqual(v2, {"howToFix": FIX})
 
     def test_the_handler_writes_and_clears_how_to_fix(self):
         """The handler sends every V2_STATUS_KEYS key on each run, null when absent."""
@@ -269,6 +290,8 @@ class TestHandlerWiring(unittest.TestCase):
         self.assertIn("MUST exit 1 then", p)
         self.assertIn("TEST THE ROOT-CAUSE OBJECT, NEVER THE ALERT'S SIGNAL", p)
         self.assertIn("killed after 60 seconds", p)
+        self.assertIn('"rollback": "<bash script>"', p)
+        self.assertIn("ROLLBACK undoes apply", p)
         self.assertIn("how to fix it.", p)
         self.assertNotIn("remediationPlan", p)
         self.assertNotIn("remediation plan", p)

@@ -13,7 +13,8 @@ Sanitizing rules (defensive, latest-run-wins):
     indices are dropped (the step is kept — a step may legitimately lose a bad citation);
   * steps are renumbered 1..N in the order given (the agent's order is authoritative);
   * rootCause.confidence normalizes number-or-string to a "0.00"-style decimal string in [0,1];
-  * howToFix is all three scripts or nothing — see _how_to_fix;
+  * howToFix is precondition, apply and verify or nothing, plus an optional rollback — see
+    _how_to_fix;
   * confidence is then BOUNDED by the evidence that was actually retrieved — see the evidence
     policy below.
 
@@ -34,8 +35,9 @@ V2_STATUS_KEYS = ("analyzedResources", "sources", "missingContext", "assumptions
 
 # status.howToFix: bash scripts. The incident controller runs precondition and verify in a
 # read-only sandbox (exit 0 = the incident is gone, 1 = it holds, anything else = unknown); a human
-# runs apply.
+# runs apply, and rollback to undo it.
 HOW_TO_FIX_SCRIPTS = ("precondition", "apply", "verify")
+HOW_TO_FIX_ROLLBACK = "rollback"
 SCRIPT_MAX_CHARS = 16384
 
 STRUCTURED_OUTPUT_INSTRUCTIONS = """
@@ -51,7 +53,7 @@ after it) containing a machine-readable summary of the SAME investigation, with 
   "assumptions": ["what you assumed because of that"],
   "reasoningTrace": [{"step": 1, "statement": "...", "evidenceRefs": [0]}],
   "rootCause": {"statement": "...", "confidence": 0.85, "category": "config|capacity|image|network|dependency|other"},
-  "howToFix": {"precondition": "<bash script>", "apply": "<bash script>", "verify": "<bash script>"}
+  "howToFix": {"precondition": "<bash script>", "apply": "<bash script>", "verify": "<bash script>", "rollback": "<bash script>"}
 }
 
 Hard rules for this block:
@@ -81,9 +83,10 @@ Hard rules for this block:
   published confidence may be bounded down by the retrieval ledger, and a percentage left in the
   prose would then contradict the report's own status.
 
-HOW TO FIX. "howToFix" is the fix as three bash scripts, each ONE JSON string (newlines as \\n,
+HOW TO FIX. "howToFix" is the fix as four bash scripts, each ONE JSON string (newlines as \\n,
 double quotes and backslashes escaped). A controller runs precondition and verify and moves the
-incident on their exit codes; a human reviews apply and runs it. Nothing else runs automatically.
+incident on their exit codes; a human reviews apply and runs it, and runs rollback only to undo
+apply. Nothing else runs automatically.
 - EXIT CODES, precondition and verify alike: 0 = the incident is gone, 1 = it still holds,
   anything else or a timeout = unknown, which changes nothing. Exit 2 whenever the script cannot
   tell.
@@ -128,8 +131,13 @@ incident on their exit codes; a human reviews apply and runs it. Nothing else ru
   saying what a human must decide, with the reason in missingContext.
 - VERIFY IT EXISTS: every object a script names is one you read this run. If a workload you would
   fix is missing, do not create or provision it in apply; report it in missingContext.
-- apply never deletes a Namespace, a Node or a CustomResourceDefinition: each takes everything
-  under it along.
+- ROLLBACK undoes apply: it restores what apply changed to the values you read this run (the
+  previous image tag, limit, replica count or where), so a human can revert a fix that made things
+  worse. It follows apply's rules: readable, idempotent, kubectl's own verbs, and it may
+  `set -euo pipefail`. When apply holds only comments, rollback is a comment saying there is
+  nothing to undo.
+- apply and rollback never delete a Namespace, a Node or a CustomResourceDefinition: each takes
+  everything under it along.
 - Every script starts with `#!/usr/bin/env bash` and a comment line saying what it tests or changes.
 
 Example: payments-api is OOMKilled at a 128Mi memory limit.
@@ -155,6 +163,11 @@ Example: payments-api is OOMKilled at a 128Mi memory limit.
       and .status.updatedReplicas == .spec.replicas
       and .status.availableReplicas == .spec.replicas' <<<"$d" >/dev/null
     case $? in 0) exit 0 ;; 1) exit 1 ;; *) exit 2 ;; esac
+  rollback:
+    #!/usr/bin/env bash
+    # Undo apply: put payments-api's memory limit back to 128Mi, the value read before the fix.
+    set -euo pipefail
+    kubectl set resources deployment payments-api -n payments -c payments-api --limits=memory=128Mi
 
 ALERT QUERY FALSE-POSITIVES: when the rows an Alert counts are written by the telemetry pipeline
 itself (a component that evaluates, stores or analyzes the alert logs text matching the alert's
@@ -186,6 +199,16 @@ Alert. With <alert>, <namespace>, <svc-a> and <svc-b> filled in:
     jq -e --arg a "'<svc-a>'" --arg b "'<svc-b>'" \\
       '(.spec.where // "" | contains($a) and contains($b)) and .status.phase == "Synced"' <<<"$o" >/dev/null
     case $? in 0) exit 0 ;; 1) exit 1 ;; *) exit 2 ;; esac
+  rollback:
+    #!/usr/bin/env bash
+    # Undo apply: drop the <svc-a> and <svc-b> exclusion from <alert>'s where.
+    set -euo pipefail
+    x="ServiceName NOT IN ('<svc-a>', '<svc-b>')"
+    w=$(kubectl get alerts.observability.krateo.io <alert> -n <namespace> -o jsonpath='{.spec.where}')
+    case "$w" in "("*") AND $x") ;; *) exit 0 ;; esac
+    w=${w%") AND $x"}; w=${w#"("}
+    kubectl patch alerts.observability.krateo.io <alert> -n <namespace> --type merge \\
+      -p "$(jq -n --arg w "$w" '{spec: {where: $w}}')"
 
 Output STRICT JSON (double quotes, no comments, no trailing commas)."""
 
@@ -334,13 +357,15 @@ def _script(v):
 
 
 def _how_to_fix(v):
-    """(howToFix, problems). howToFix holds all three scripts or is None: the controller needs
-    precondition and verify to move the incident, and the human needs apply, so a partial set is
-    dropped whole and the rest of the report is kept. Keys other than the three are dropped."""
+    """(howToFix, problems, rollback_problem). howToFix holds all three HOW_TO_FIX_SCRIPTS or is
+    None: the controller needs precondition and verify to move the incident, and the human needs
+    apply, so a partial set is dropped whole and the rest of the report is kept. Rollback is kept
+    when usable and otherwise left out alone, since the fix works without it; rollback_problem says
+    why it was left out. Other keys are dropped."""
     if v is None:
-        return None, ["none returned"]
+        return None, ["none returned"], None
     if not isinstance(v, dict):
-        return None, ["not an object"]
+        return None, ["not an object"], None
     out, problems = {}, []
     for k in HOW_TO_FIX_SCRIPTS:
         script, why = _script(v.get(k))
@@ -348,13 +373,24 @@ def _how_to_fix(v):
             problems.append(f"{k} {why}")
         else:
             out[k] = script
-    return (None, problems) if problems else (out, [])
+    if problems:
+        return None, problems, None
+    rollback, why = _script(v.get(HOW_TO_FIX_ROLLBACK))
+    if why:
+        return out, [], why
+    out[HOW_TO_FIX_ROLLBACK] = rollback
+    return out, [], None
 
 
 def _no_fix_note(problems):
     """The missingContext line for a report whose howToFix was dropped."""
     return (f"No usable howToFix ({'; '.join(problems)}): the incident has no scripts to check or "
             "fix it.")
+
+
+def _no_rollback_note(why):
+    """The missingContext line for a howToFix without a rollback."""
+    return f"No usable rollback ({why}): undoing apply is left to whoever runs it."
 
 
 # ---------------------------------------------------------------------------------------------
@@ -679,7 +715,7 @@ def parse_structured_report(text, tool_ledger=None):
     try:
         for match, data in _candidate_blocks(text):
             sources = _sources(data.get("sources"))
-            how_to_fix, fix_problems = _how_to_fix(data.get("howToFix"))
+            how_to_fix, fix_problems, rollback_problem = _how_to_fix(data.get("howToFix"))
             v2 = {
                 "analyzedResources": _obj_list(data.get("analyzedResources"),
                                                ("gvr", "name", "namespace", "whatWasRead")),
@@ -712,6 +748,9 @@ def parse_structured_report(text, tool_ledger=None):
             if fix_problems and v2.get("rootCause"):
                 v2["missingContext"] = (v2.get("missingContext") or [])[:63] + \
                     [_no_fix_note(fix_problems)]
+            elif rollback_problem:
+                v2["missingContext"] = (v2.get("missingContext") or [])[:63] + \
+                    [_no_rollback_note(rollback_problem)]
             return prose, v2
     except Exception:  # noqa: BLE001 — the structured block is best-effort, never fatal
         pass

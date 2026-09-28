@@ -20,22 +20,24 @@ parser of the agent's answer. The answer ends with one `json` block. The parser 
 `V2_STATUS_KEYS` it finds there, sanitized, and falls back to a prose-only report when there is no
 usable block.
 
-`howToFix` is the fix as three bash scripts:
+`howToFix` is the fix as four bash scripts:
 
 | Script | Run by | Exit codes |
 |---|---|---|
 | `precondition` | the incident controller, in a read-only sandbox, first right after the analysis | `1` the incident holds, `0` it is gone; its first run must exit `1` |
 | `apply` | a human, after reviewing it | none; it may write and is idempotent |
 | `verify` | the incident controller, in the sandbox, after precondition `0` or an applied fix | `0` the fix worked, `1` the incident still holds |
+| `rollback` | a human, to undo an applied fix | none; it restores what apply changed and is idempotent |
 
 Any other exit code, or a timeout, is unknown and changes nothing. The sandbox has bash, kubectl
 and jq, a ServiceAccount that reads but never writes and cannot read Secrets, egress to the API
 server only, and a 60 s deadline. The precondition tests the root-cause object, never the alert's
 rows, so it tells whether that cause is gone while the alert fires for another.
 
-The parser keeps `howToFix` only when all three scripts are non-empty strings of at most 16384
-characters (a list of lines is joined). Otherwise it drops `howToFix` whole, keeps the rest of the
-report and, when there is a root cause, appends to `missingContext` why there are no scripts.
+The parser keeps `howToFix` only when precondition, apply and verify are non-empty strings of at
+most 16384 characters (a list of lines is joined). Otherwise it drops `howToFix` whole, keeps the
+rest of the report and, when there is a root cause, appends to `missingContext` why there are no
+scripts. A rollback that fails the same test is left out alone, and `missingContext` says so.
 
 `TroubleshootingReport` has no `howToFix` field, so the apiserver prunes it; the `Incident` CRD
 (incident-controller) stores it. The handler does not write `status.remediationPlan`.
