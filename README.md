@@ -5,14 +5,14 @@ Turns each firing of a Krateo observability **Alert** into an **Incident** with 
 **incident-agent root-cause analysis**, in the background — no browser required.
 
 ```
-Alert fires (HyperDX webhook, or an apiRef RESTAction) → krateo-alert-troubleshooter
+Alert fires (HyperDX webhook) → krateo-alert-troubleshooter
     → open incident for this Alert?  yes → status.firings++
                                      no  → new Incident → A2A call to incident-agent
                                            → status: analysis + howToFix scripts, state Open
 ```
 
 ## What it does
-On a firing (`POST /webhook`, or an apiRef alert the reconciler evaluates) the handler:
+On a firing (`POST /webhook`) the handler:
 1. counts it on the Alert's open `Incident` (`observability.krateo.io/v1alpha1`) if there is one,
 2. else creates one in state `Analyzing` and calls incident-agent over A2A (JSON-RPC
    `message/stream`) with the incident's prompt,

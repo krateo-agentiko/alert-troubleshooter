@@ -9,7 +9,7 @@ timestamp: 2026-08-20T00:00:00Z
 # alert-troubleshooter
 
 A webhook receiver + controller (not an agent). Each firing of an `Alert`, a HyperDX webhook
-(`POST /webhook`) or an apiRef alert the reconciler evaluates, is recorded on an `Incident`
+(`POST /webhook`), is recorded on an `Incident`
 (`observability.krateo.io/v1alpha1`, the CRD incident-controller ships): the alert's open incident
 counts it, or a new incident opens and **incident-agent** root-causes it over A2A. The webhook is
 acked 202 immediately; the analysis runs in a background thread.
@@ -69,25 +69,3 @@ An alert has at most one open incident (Policy A); an incident is open in any st
 The reconciler mirrors the HyperDX alert's `state` onto `status.state` every cycle, and writes
 `status.okSince` in the same patch: the time the alert last turned OK, kept while it stays OK and
 unset in any other state. It is for display ("OK for 13 min") and never closes anything.
-
-## apiRef alerts
-
-An `Alert` sets exactly one of `spec.where` (a HyperDX row count) or `spec.apiRef` (a
-RESTAction), enforced by a CEL rule. For an apiRef alert the reconciler itself polls, every
-`spec.interval`:
-
-1. `GET <snowplowUrl>/call?apiVersion=templates.krateo.io/v1&resource=restactions&namespace=&name=`
-   with the service JWT (`config.authnUrl` required), the path core-provider's CDC uses for a
-   CompositionDefinition's apiRef.
-2. The RESTAction's filter returns `{value: N, items?: [...]}`. `value` is compared with
-   `threshold` using HyperDX's `thresholdType` semantics; `between`/`not_between` are `Invalid`
-   (no `thresholdMax`). The row-count tautology check does not apply.
-3. `state` and `okSince` are written like a HyperDX alert's, and `status.value` holds the
-   RESTAction's number (display only; a `where` alert has none). An ALERT evaluation is a firing,
-   recorded like a webhook's; a new incident's prompt carries `items`.
-
-HyperDX is not involved, and apiRef alerts are evaluated before the HyperDX pass, so a HyperDX
-outage does not stop them. HyperDX objects left from when a CR used `where` are deleted. The
-snowplow call runs as group `krateo:alert-troubleshooter`, which has cluster-wide read (the
-`krateo-alert-troubleshooter-observer` ClusterRole), so it can get any RESTAction and everything a
-read-only one reads. A failed call is `phase: Error` and is retried every reconcile cycle.

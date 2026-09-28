@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """krateo-alert-troubleshooter — turns an alert firing into an Incident with a root-cause analysis.
 
-Both triggers, a HyperDX webhook (process) and an apiRef alert the reconciler evaluates, call
-analyze(), which applies Policy A:
+A HyperDX webhook (process) calls analyze(), which applies Policy A:
   * the alert has an open Incident (any state but Resolved and Closed): count the firing on it;
   * it has none: create one in state Analyzing, run the incident-agent RCA over A2A, and write the
     analysis with its howToFix scripts in state Open.
@@ -30,15 +29,13 @@ APISERVER = os.environ.get("APISERVER", "https://kubernetes.default.svc")
 SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 GROUP, VERSION = "observability.krateo.io", "v1alpha1"
 A2A_TIMEOUT = int(os.environ.get("A2A_TIMEOUT", "180"))
-# How much of an apiRef alert's `items` goes into the RCA prompt.
-ITEMS_PROMPT_CHARS = 4000
 
 # The Incident contract (incident-controller apis/incident/v1alpha1).
 LABEL_ALERT = "observability.krateo.io/alert"  # value: the Alert's metadata.name, so at most 63 chars
 ENDED = ("Resolved", "Closed")                 # an incident in any other state is open
 WRITE_ATTEMPTS = 5                             # conditioned status writes retried on a 409
 
-# Alert spec.interval: a `where` alert's lookback window, an apiRef alert's polling period.
+# Alert spec.interval: the lookback window HyperDX counts the `where` rows over.
 INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600,
                     "6h": 21600, "12h": 43200, "1d": 86400}
 
@@ -393,7 +390,7 @@ def a2a_analyze(prompt, context_id=None):
     return out.strip(), ledger
 
 
-def build_prompt(alert_name, alert_state, where=None, message=None, api=None):
+def build_prompt(alert_name, alert_state, where=None, message=None):
     """The user message carries the INCIDENT; the agent's system prompt carries the METHOD.
 
     THE COUPLING THIS CREATES: the method lives in ONE place, so AUTOPILOT_A2A_URL must point at an
@@ -408,25 +405,8 @@ def build_prompt(alert_name, alert_state, where=None, message=None, api=None):
             + ". That query is your entry point, and the workload those rows name is what you "
             "diagnose."
         )
-    source = "HyperDX alert"
-    if api:
-        # An apiRef alert: the value came from a RESTAction, and its items are the objects that
-        # matched, so they are the entry point.
-        source = "Krateo alert"
-        scope = (
-            f"\n\nIt fired because RESTAction `{api['namespace']}/{api['name']}` returned value "
-            f"{api['value']} ({api['thresholdType']} {api['threshold']})"
-            + (f" — intent: {message}" if message else "") + "."
-        )
-        items = api.get("items")
-        if items:
-            shown = json.dumps(items, default=str)
-            if len(shown) > ITEMS_PROMPT_CHARS:
-                shown = shown[:ITEMS_PROMPT_CHARS] + " …(truncated)"
-            scope += (" The objects it matched are your entry point, and they are what you "
-                      f"diagnose:\n{shown}")
     return (
-        f'The {source} "{alert_name}" has fired (state {alert_state}) on this Krateo '
+        f'The HyperDX alert "{alert_name}" has fired (state {alert_state}) on this Krateo '
         "PlatformOps cluster." + scope +
         "\n\nRoot-cause it: the single most likely cause, the composition or component affected, "
         "and how to fix it."
@@ -460,11 +440,9 @@ def process(payload):
 
 
 def analyze(alert_name, alert_state, alert_ref, alert_namespace, where=None, message=None,
-            api=None, interval=None):
+            interval=None):
     """One firing of an alert, through Policy A.
 
-    Both triggers call it: the HyperDX webhook (process) and the evaluation of an apiRef alert
-    (reconciler), which passes `api` = {name, namespace, value, threshold, thresholdType, items}.
     `alert_name` is the displayName, `alert_ref` the Alert's metadata.name, `interval` its
     spec.interval; the incident lives in the Alert's namespace. A firing on an open incident, or
     within one interval of the latest one's resolution, is counted on it and runs no RCA.
@@ -474,7 +452,7 @@ def analyze(alert_name, alert_state, alert_ref, alert_namespace, where=None, mes
               "Incident; skipping", flush=True)
         return
     ns = alert_namespace
-    prompt = build_prompt(alert_name, alert_state, where, message, api=api)
+    prompt = build_prompt(alert_name, alert_state, where, message)
     try:
         with _create_lock:
             created = _open_or_count(ns, alert_ref, prompt, datetime.now(timezone.utc),
