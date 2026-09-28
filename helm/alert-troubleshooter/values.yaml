@@ -9,9 +9,15 @@ config:
   # (has the k8s/Helm/ClickHouse read tools an RCA needs; autopilot has neither). In-cluster kagent
   # A2A Service, named after the Agent's metadata.name -> incident-agent.<namespace>.svc:8080.
   autopilotA2aUrl: http://incident-agent.krateo-system.svc:8080/
+  # A2A endpoint of the agent that judges whether a firing alert's current problem is the one an
+  # open incident of that alert describes (compare.py); a firing no open incident covers opens a
+  # new incident. Default = the autopilot agent's in-cluster kagent A2A Service. Behind the
+  # agentgateway, use its /api/a2a/<namespace>/autopilot path, so agentgateway-policies'
+  # incident-compare rate limit bounds these calls.
+  compareA2aUrl: http://autopilot.krateo-system.svc:8080/
   # Intra-service auth (Option A). Base URL of the authn service. When set, the handler exchanges its
   # projected SA token (audience "authn") at <authnUrl>/serviceaccount/login for a Krateo JWT and
-  # presents it on the A2A call, so incident-agent can reach its agentgateway-gated MCP tools; a
+  # presents it on the A2A calls (the RCA and the comparisons), so the gated agents accept them; a
   # serviceaccount.authn.krateo.io ServiceAccount mapping CR is also rendered. Requires authn's
   # serviceaccount strategy. Empty (default) DISABLES it — unauthenticated A2A, exactly as before
   # (safe on older clusters with no gateway). Enable in-cluster with: http://authn.krateo-system.svc
@@ -19,7 +25,8 @@ config:
   # HyperDX v2 external API the reconciler pushes Alert CRs to (Bearer auth via hyperdx-api-token).
   # Default = the krateo-clickstack-api Service the observability stack exposes.
   hyperdxApiUrl: http://krateo-clickstack-api.krateo-system.svc:8000
-  # How often (seconds) the reconciler pushes Alert CRs to HyperDX.
+  # How often (seconds) the reconciler pushes Alert CRs to HyperDX and mirrors their state. Each
+  # pass that finds an alert ALERT is one firing of it.
   reconcileInterval: 60
   # Default Alert CRs the reconciler seeds into HyperDX (rendered to DEFAULT_ALERTS_JSON). Set to []
   # to seed none. Each firing auto-launches a full incident-agent RCA, so this default set is kept

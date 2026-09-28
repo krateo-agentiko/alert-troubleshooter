@@ -1,4 +1,4 @@
-"""Exact Alert identity: one Alert CR is one HyperDX alert, one webhook target, its own incidents.
+"""Exact Alert identity: one Alert CR is one HyperDX alert and its own incidents.
 
 The HyperDX side runs the real HyperDXV2 client against an in-memory API that keeps the two
 behaviours these bugs hinge on: a dashboard PUT keeps a tile id only if it already exists, and
@@ -127,6 +127,8 @@ class ReconcilerHarness:
         self.r._list_alert_crs = lambda: copy.deepcopy(list(self.crs.values()))
         self.r._patch_status = self._patch_status
         self.r._patch_finalizers = lambda name, fins: None
+        self.fired = []
+        self.r._start_firing = lambda cr: self.fired.append(cr["metadata"]["name"])
 
     def _patch_status(self, name, status):
         st = self.crs[name].setdefault("status", {})
@@ -275,18 +277,36 @@ class TestWebhookTemplate(unittest.TestCase):
         self.assertEqual(api.webhooks[wid]["body"], hyperdx_v2.DEFAULT_WEBHOOK_BODY)
 
 
-class TestWebhookMapsToItsOwnCR(unittest.TestCase):
-    """Bugs #3 and #4: a substring match tied a webhook to the wrong Alert, and same-named Alerts
-    shared one record. Each Alert now labels its own incidents."""
+class TestTheReconcilerFiresAlertingCRs(unittest.TestCase):
+    """Each pass that mirrors an ALERT state is one firing of that CR, and of no other."""
+
+    def test_only_the_alerting_CRs_fire(self):
+        api = FakeHyperDXAPI()
+        h = ReconcilerHarness([_alert_cr(K, "where-k"), _alert_cr(S, "where-s")])
+        hdx = _client(api)
+        h.r.reconcile_once(hdx)                # creates both HyperDX alerts, OK
+        self.assertEqual(h.fired, [])
+        api.alerts[h.status(S)["hyperdxAlertId"]]["state"] = "ALERT"
+        h.r.reconcile_once(hdx)
+        h.r.reconcile_once(hdx)
+        self.assertEqual(h.fired, [S, S])
+        self.assertEqual(h.status(S)["state"], "ALERT")
+
+    def test_a_refused_CR_never_fires(self):
+        api = FakeHyperDXAPI()
+        cr = _alert_cr(K, "where-k")
+        cr["spec"]["threshold"] = 0            # `above 0` is a tautology
+        h = ReconcilerHarness([cr])
+        h.r.reconcile_once(_client(api))
+        self.assertEqual((h.fired, h.status(K)["phase"]), ([], "Invalid"))
+
+
+class TestEachCRLabelsItsOwnIncidents(unittest.TestCase):
+    """Bugs #3 and #4: a substring match tied a firing to the wrong Alert, and same-named Alerts
+    shared one record. A firing is its CR's, and each Alert labels its own incidents."""
 
     def setUp(self):
-        self.k8s = FakeK8s([
-            _alert_cr(K, "where-k", status={"hyperdxAlertId": "hk"}),
-            _alert_cr(S, "where-s", status={"hyperdxAlertId": "hs"}),
-            _alert_cr("krateo-platform-crashloop", "where-platform",
-                      display="Krateo — platform pod crash-looping"),
-            _alert_cr("sre-pod-crashloop", "where-cluster", display="Pod crash-looping"),
-        ])
+        self.k8s = FakeK8s()
         self.prompts = []
         self._orig = (handler._k8s, handler.a2a_analyze)
         handler._k8s = self.k8s
@@ -300,8 +320,8 @@ class TestWebhookMapsToItsOwnCR(unittest.TestCase):
         return {o["spec"]["alertRef"]["name"]: o for o in self.k8s.incidents.values()}
 
     def test_two_same_displayName_alerts_get_two_incidents(self):
-        handler.process({"alertName": f"🚨 {K}", "state": "ALERT"})
-        handler.process({"alertName": f"🚨 {S}", "state": "ALERT"})
+        handler.fire(_alert_cr(K, "where-k"))
+        handler.fire(_alert_cr(S, "where-s"))
         got = self.incidents()
         self.assertEqual(sorted(got), [K, S])
         for name, where in ((K, "where-k"), (S, "where-s")):
@@ -311,22 +331,13 @@ class TestWebhookMapsToItsOwnCR(unittest.TestCase):
             self.assertIn(DISPLAY, got[name]["spec"]["prompt"])
         self.assertNotEqual(self.prompts[0][1], self.prompts[1][1])  # two kagent threads
 
-    def test_a_title_maps_to_the_exact_alert_not_one_containing_it(self):
-        handler.process({"alertName": "🚨 sre-pod-crashloop", "state": "ALERT"})
+    def test_an_alerts_firing_never_counts_on_a_look_alike_alerts_incident(self):
+        self.k8s.put("krateo-system", "krateo-platform-crashloop-x", "krateo-platform-crashloop",
+                     state="Open")
+        handler.fire(_alert_cr("sre-pod-crashloop", "where-cluster", display="Pod crash-looping"))
         got = self.incidents()
-        self.assertEqual(sorted(got), ["sre-pod-crashloop"])
-        self.assertIn("`where-cluster`", got["sre-pod-crashloop"]["spec"]["prompt"])
-
-    def test_a_title_naming_no_alert_runs_no_rca(self):
-        """A displayName title (a HyperDX alert not yet renamed) names no CR: no scope, no RCA."""
-        handler.process({"alertName": "🚨 Pod crash-looping", "state": "ALERT"})
-        self.assertEqual(self.k8s.incidents, {})
-        self.assertEqual(self.prompts, [])
-
-    def test_a_resolve_notification_runs_no_rca(self):
-        handler.process({"alertName": f"✅ {K}", "state": "OK"})
-        self.assertEqual(self.k8s.incidents, {})
-        self.assertEqual(self.k8s.calls, [])
+        self.assertEqual(sorted(got), ["krateo-platform-crashloop", "sre-pod-crashloop"])
+        self.assertEqual(got["krateo-platform-crashloop"]["status"]["firings"], 1)
 
 
 if __name__ == "__main__":

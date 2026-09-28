@@ -1,7 +1,9 @@
-# krateo-alert-troubleshooter — the HyperDX-alert → RCA-analysis handler. HyperDX posts a
-# fired alert to http://krateo-alert-troubleshooter.krateo-system.svc:8080/webhook; the handler
-# calls the RCA agent's A2A endpoint (config.autopilotA2aUrl, incident-agent by default) and
-# writes an Incident CR (incident-controller's CRD). Image is tag-driven (values.image.tag = chart
+# krateo-alert-troubleshooter — the HyperDX-alert → Incident handler. Its reconciler mirrors each
+# Alert's HyperDX state every pass; a firing counts on the open incident the comparison agent
+# (config.compareA2aUrl, autopilot by default) judges the same problem, or opens an Incident CR
+# (incident-controller's CRD) whose RCA the RCA agent (config.autopilotA2aUrl, incident-agent by
+# default) writes. HyperDX's webhook posts to
+# http://krateo-alert-troubleshooter.krateo-system.svc:8080/webhook, which only acknowledges. Image is tag-driven (values.image.tag = chart
 # appVersion), a real tag published (from main@a0bfebf) after the arm64 build fix — verified multi-arch
 # (linux/amd64 + linux/arm64) with `docker buildx imagetools inspect`. Bump this version tag
 # alongside any future handler.py/hyperdx*.py change that needs to reach the cluster.
@@ -17,7 +19,7 @@ metadata:
   name: krateo-alert-troubleshooter
   namespace: krateo-system
 rules:
-  # the handler opens an Incident per alert firing (Policy A), counts firings and writes the RCA
+  # the handler opens Incidents for firing alerts, counts firings and writes the RCA
   - apiGroups: ["observability.krateo.io"]
     resources: ["incidents", "incidents/status"]
     verbs: ["create", "get", "list", "patch", "update"]
@@ -136,9 +138,12 @@ spec:
               value: {{ .Release.Namespace | quote }}
             - name: AUTOPILOT_A2A_URL
               value: {{ .Values.config.autopilotA2aUrl | quote }}
+            # The agent that judges whether a firing is the problem an open incident describes.
+            - name: COMPARE_A2A_URL
+              value: {{ .Values.config.compareA2aUrl | quote }}
             # Intra-service auth (Option A): when set, the handler exchanges the projected SA token
             # (audience "authn", mounted below) at <authnUrl>/serviceaccount/login for a Krateo JWT and
-            # presents it on the A2A call so incident-agent can reach its agentgateway-gated MCP tools.
+            # presents it on the A2A calls (the RCA and the comparisons), so the gated agents accept them.
             # Empty (default) = unauthenticated A2A, exactly as before (older clusters with no gateway).
             - name: AUTHN_URL
               value: {{ .Values.config.authnUrl | quote }}

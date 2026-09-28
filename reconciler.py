@@ -9,13 +9,14 @@ Runs as a background thread in the krateo-alert-troubleshooter process:
         being deleted (deletionTimestamp) -> delete its HyperDX alert+dashboard, drop the finalizer
         else, no status.hyperdxAlertId    -> create dashboard-tile + alert, record ids in status
         else                              -> mirror the live alert state (OK/ALERT/PENDING) to status
+        live state ALERT                  -> a firing: handler.fire, off the reconcile thread
     (a finalizer on each CR guarantees the HyperDX resources are removed before the CR is deleted)
 
-Each HyperDX alert is named after its CR's metadata.name, and the webhook title carries that name
-back to the handler, which looks the CR up by it.
+Each HyperDX alert is named after its CR's metadata.name.
 
-Alerts flow: HyperDX evaluates the alert; when it fires it POSTs the webhook -> this service's
-/webhook -> an Incident with an RCA (handler.analyze). The reconciler only manages config + status.
+Alerts flow: HyperDX evaluates the alert; each pass that finds it ALERT is one firing, which
+handler.fire counts on an incident or turns into a new Incident with an RCA. The HyperDX webhook
+only acknowledges (handler.process): a HyperDX alert needs a channel.
 
 Auth: HYPERDX_ACCESS_KEY (user.accessKey from hyperdx-api-token Secret, written by the bootstrap
 Job). Calls go to HYPERDX_API_URL (krateo-clickstack-api.krateo-system.svc:8000, port 8000 =
@@ -179,8 +180,8 @@ def _push_spec(hdx, cr, source, webhook_id, live_alert):
     on the ALERT; `where` lives on the dashboard TILE. A push that only did the first would leave a
     corrected filter unapplied, which is the same silent failure one level down.
 
-    The alert's name is pushed too: it is the CR's metadata.name, which the webhook title carries
-    back to the handler. An alert still named after a displayName is renamed here.
+    The alert's name is pushed too: it is the CR's metadata.name, which ties the HyperDX alert to
+    its CR (see _release_shared). An alert still named after a displayName is renamed here.
     """
     spec = cr.get("spec", {})
     status = cr.get("status", {})
@@ -232,6 +233,8 @@ def _push_spec(hdx, cr, source, webhook_id, live_alert):
 
 
 def _reconcile_cr(hdx, cr, source, webhook_id):
+    """Push the CR to HyperDX and mirror its live state. Returns that state, or None when the CR
+    is refused."""
     meta, spec, status = cr["metadata"], cr.get("spec", {}), cr.get("status", {})
     name = meta["name"]
     hdx_id = status.get("hyperdxAlertId")
@@ -248,7 +251,7 @@ def _reconcile_cr(hdx, cr, source, webhook_id):
     if why:
         _patch_status(name, {"phase": "Invalid", "error": why, "lastSyncedAt": _now()})
         print(f"[reconciler] Alert {name} refused: {why}", flush=True)
-        return
+        return None
 
     live = {a["id"]: a for a in hdx.list_alerts()}
     # The alert the status names, else the one already named after this CR: a status that lost
@@ -274,12 +277,12 @@ def _reconcile_cr(hdx, cr, source, webhook_id):
                                  "phase": "SpecDrift", "error": str(e)[:300],
                                  "lastSyncedAt": _now()})
             print(f"[reconciler] Alert {name}: spec push failed, phase=SpecDrift ({e})", flush=True)
-            return
+            return st
         _patch_status(name, {**ids, "state": st, "okSince": _ok_since(status, st),
                              "phase": "Synced", "lastSyncedAt": _now()})
         if changed:
             print(f"[reconciler] Alert {name}: pushed {', '.join(changed)} to hyperdx {alert['id']}", flush=True)
-        return
+        return st
 
     # create: dashboard-tile then an alert on it named after this CR. A tile another alert already
     # evaluates is never reused.
@@ -296,6 +299,7 @@ def _reconcile_cr(hdx, cr, source, webhook_id):
                          "state": st, "okSince": _ok_since(status, st),
                          "phase": "Synced", "lastSyncedAt": _now()})
     print(f"[reconciler] synced Alert {name} -> hyperdx {alert['id']} ({st})", flush=True)
+    return st
 
 
 def _release_shared(hdx, crs):
@@ -328,6 +332,12 @@ def _release_shared(hdx, crs):
                   flush=True)
 
 
+def _start_firing(cr):
+    """A firing, off the reconcile thread: a comparison takes seconds, a new incident's RCA
+    minutes."""
+    threading.Thread(target=handler.fire, args=(cr,), daemon=True).start()
+
+
 def reconcile_once(hdx):
     crs = _list_alert_crs()
     # One pass = one view of the dashboards. Cleared here rather than aged, so a `where` comparison
@@ -357,7 +367,8 @@ def reconcile_once(hdx):
                 _finalize(hdx, cr)      # CR is being deleted -> clean up HyperDX + drop finalizer
                 continue
             _ensure_finalizer(cr)       # guard the CR so its HyperDX resources are cleaned on delete
-            _reconcile_cr(hdx, cr, source, webhook_id)
+            if _reconcile_cr(hdx, cr, source, webhook_id) == "ALERT":
+                _start_firing(cr)
         except requests.HTTPError:
             raise  # bubble 401/session issues to the loop for re-login
         except Exception as e:  # noqa: BLE001 — one bad CR shouldn't stall the rest

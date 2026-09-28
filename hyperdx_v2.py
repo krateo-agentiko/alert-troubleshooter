@@ -15,8 +15,8 @@ import requests
 
 # A generic webhook body can use only {{title}}, {{body}}, {{link}}, {{state}}, {{startTime}},
 # {{endTime}} and {{eventId}} (a hash); there is no alert id. {{title}} is a state emoji plus the
-# HyperDX alert name, and the reconciler names each HyperDX alert after its Alert CR's
-# metadata.name, so the title identifies the CR. {{state}} is ALERT on a firing and OK on a resolve.
+# HyperDX alert name, which is its Alert CR's metadata.name. {{state}} is ALERT on a firing and OK
+# on a resolve. The handler only logs a notification: the reconciler's pass fires alerts.
 DEFAULT_WEBHOOK_BODY = '{"alertName":"{{title}}","state":"{{state}}","source":"hyperdx-alert"}'
 
 

@@ -13,8 +13,17 @@ timestamp: 2026-08-20T00:00:00Z
 
 HTTP: `POST /webhook` (acked 202); `GET /healthz`. The webhook body is
 `{"alertName":"<emoji> <Alert metadata.name>","state":"ALERT|OK","source":"hyperdx-alert"}`, the
-template the reconciler installs on its HyperDX webhook. `alertName` must name an `Alert` in the
-release namespace exactly; `state: OK` is ignored.
+template the reconciler installs on its HyperDX webhook. The handler only logs it: the reconciler's
+pass fires alerts.
+
+## Comparison contract
+
+`compare.py` holds both sides of it. Each call goes to `config.compareA2aUrl` over A2A
+(`message/stream`), on a fresh kagent thread, with the service JWT and the header
+`X-Krateo-Purpose: incident-compare`, which agentgateway-policies' `incidentCompare` route
+rate-limits. The answer ends with one block `{"equal": true|false, "reason": "<one sentence>"}`.
+Anything else, a failed call, or a 429 is no verdict. See
+[overview](overview.md#incident-comparison).
 
 ## RCA output contract
 

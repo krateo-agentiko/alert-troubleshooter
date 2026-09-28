@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""krateo-alert-troubleshooter — turns an alert firing into an Incident with a root-cause analysis.
+"""krateo-alert-troubleshooter — turns a firing alert into Incidents, each with a root-cause analysis.
 
-A HyperDX webhook (process) calls analyze(), which applies Policy A:
-  * the alert has an open Incident (any state but Resolved and Closed): count the firing on it;
-  * it has none: create one in state Analyzing, run the incident-agent RCA over A2A, and write the
-    analysis with its howToFix scripts in state Open.
-From Open on, the incident controller runs the scripts and moves the Incident. Stdlib + requests.
+The reconciler mirrors every Alert's HyperDX state about every 60 s and calls fire() for each one
+that is ALERT. fire() counts the firing on an incident that covers it (see _pick) or opens a new
+one: it creates the Incident in state Analyzing, runs the incident-agent RCA over A2A, and writes
+the analysis with its howToFix scripts in state Open. An alert therefore has any number of
+incidents, one per problem. From Open on, the incident controller runs the scripts and moves the
+Incident. Stdlib + requests.
 """
 import base64
 import json
 import os
-import re
 import threading
 import time
 import uuid
@@ -20,6 +20,7 @@ from urllib.parse import quote
 
 import requests
 
+import compare  # the incident-comparison contract: prompt + verdict parser
 import report_v2  # the structured-report contract: prompt instructions + defensive parser
 
 # --- config (env, with in-cluster defaults) ---
@@ -29,6 +30,12 @@ APISERVER = os.environ.get("APISERVER", "https://kubernetes.default.svc")
 SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 GROUP, VERSION = "observability.krateo.io", "v1alpha1"
 A2A_TIMEOUT = int(os.environ.get("A2A_TIMEOUT", "180"))
+# The agent that judges whether a firing is the problem an open incident describes (compare.py).
+COMPARE_A2A = os.environ.get("COMPARE_A2A_URL", "http://autopilot.krateo-system.svc:8080/")
+COMPARE_TIMEOUT = int(os.environ.get("COMPARE_TIMEOUT", "120"))
+# Sent on every comparison call. agentgateway-policies routes requests carrying it to its
+# incident-compare route, whose rate limit bounds these calls (a 429 is no verdict).
+COMPARE_HEADERS = {"X-Krateo-Purpose": "incident-compare"}
 
 # The Incident contract (incident-controller apis/incident/v1alpha1).
 LABEL_ALERT = "observability.krateo.io/alert"  # value: the Alert's metadata.name, so at most 63 chars
@@ -56,7 +63,8 @@ def interval_seconds(interval):
 AUTHN_URL = os.environ.get("AUTHN_URL", "").rstrip("/")
 AUTHN_TOKEN_FILE = os.environ.get("AUTHN_TOKEN_FILE", "/var/run/secrets/authn/token")
 
-_create_lock = threading.Lock()  # one firing at a time finds-or-creates, so two cannot both open one
+_firing = set()                  # (namespace, alert) pairs with an evaluation in progress
+_firing_lock = threading.Lock()
 _jwt_cache = {"token": "", "exp": 0.0}
 _jwt_lock = threading.Lock()  # serialize the token exchange so concurrent fires reuse one JWT
 
@@ -145,26 +153,59 @@ def _resolved_at(incident):
         return None
 
 
-def incident_to_count(items, at, grace):
-    """The incident a firing at `at` counts on, or None to open a new one.
-
-    The newest open incident; else the alert's latest incident when it is Resolved less than
-    `grace` seconds (one spec.interval) ago. A `where` alert keeps counting rows from before the
-    fix for its lookback window, so those firings belong to the incident that fix resolved. A
-    Closed incident never takes a firing: after a human close the next firing opens a new one."""
-    open_ = _newest([i for i in items if (i.get("status") or {}).get("state") not in ENDED])
-    if open_ is not None:
-        return open_
-    latest = _newest(items)
-    if latest is None or (latest.get("status") or {}).get("state") != "Resolved":
-        return None
-    resolved = _resolved_at(latest)
-    return latest if resolved and (at - resolved).total_seconds() < grace else None
+def resolved_within(incident, at, grace):
+    """Whether `incident` is Resolved less than `grace` seconds before `at`."""
+    if (incident.get("status") or {}).get("state") != "Resolved":
+        return False
+    resolved = _resolved_at(incident)
+    return bool(resolved) and (at - resolved).total_seconds() < grace
 
 
 def _alert_incidents(ns, alert_ref):
     selector = quote(f"{LABEL_ALERT}={alert_ref}", safe="")
     return _k8s("GET", f"{_incidents(ns)}?labelSelector={selector}").get("items") or []
+
+
+def _pick(alert, items, at, grace):
+    """The incident a firing at `at` counts on, or None to open a new one.
+
+    In order:
+      1. the first open incident (any state but Resolved and Closed) with an analysis that the
+         comparison agent judges the same problem, newest first;
+      2. the newest open incident without an analysis (Analyzing, or its RCA failed): there is
+         nothing to compare with, and a new incident would rerun the analysis;
+      3. the alert's latest incident when it is Resolved less than `grace` seconds (one
+         spec.interval) ago: a `where` alert keeps counting rows from before the fix for its
+         lookback window, and those belong to the incident the fix resolved. A Closed incident
+         never takes a firing.
+    Raises compare.NoVerdict when a comparison gave no verdict and nothing above covers the
+    firing: whether it is a new problem is then unknown, so nothing opens."""
+    ns, alert_ref = alert["metadata"].get("namespace") or NAMESPACE, alert["metadata"]["name"]
+    open_ = sorted((i for i in items if (i.get("status") or {}).get("state") not in ENDED),
+                   key=lambda i: (i["metadata"].get("creationTimestamp", ""), i["metadata"]["name"]),
+                   reverse=True)
+    failed = None
+    for incident in (i for i in open_ if compare.comparable(i)):
+        name = incident["metadata"]["name"]
+        try:
+            equal, reason = a2a_compare(compare.build_prompt(alert, incident, at.isoformat()))
+        except compare.NoVerdict as e:
+            print(f"[compare] {ns}/{alert_ref} vs {name}: no verdict ({e})", flush=True)
+            failed = e
+            continue
+        print(f"[compare] {ns}/{alert_ref} vs {name}: {'equal' if equal else 'different'} "
+              f"({reason})", flush=True)
+        if equal:
+            return incident
+    unanalyzed = [i for i in open_ if not compare.comparable(i)]
+    if unanalyzed:
+        return unanalyzed[0]
+    latest = _newest(items)
+    if latest is not None and resolved_within(latest, at, grace):
+        return latest
+    if failed is not None:
+        raise failed
+    return None
 
 
 def _patch_status(ns, incident, status):
@@ -175,51 +216,52 @@ def _patch_status(ns, incident, status):
     return _k8s("PATCH", _incidents(ns, incident["metadata"]["name"]), body, subresource="status")
 
 
-def _count_firing(ns, incident, now):
-    """firings++ and lastFiredAt, and nothing else. False on a lost race (409)."""
-    firings = int((incident.get("status") or {}).get("firings") or 0)
-    try:
-        _patch_status(ns, incident, {"firings": firings + 1, "lastFiredAt": now})
-        return True
-    except requests.HTTPError as e:
-        if _http_status(e) == 409:
-            return False
-        raise
-
-
-def _open_or_count(ns, alert_ref, prompt, at, grace):
-    """Policy A for one firing: count it on the incident incident_to_count picks, or create one.
-
-    Returns the new Incident, or None when the firing was counted on an existing one."""
-    now = at.isoformat()
-    name = incident_name(alert_ref, at)
+def _count_on(ns, name, now):
+    """firings++ and lastFiredAt on incident `name`, and nothing else, re-read on a lost race."""
     for _ in range(WRITE_ATTEMPTS):
-        target = incident_to_count(_alert_incidents(ns, alert_ref), at, grace)
-        if target is not None:
-            if _count_firing(ns, target, now):
-                print(f"[incident] {ns}/{target['metadata']['name']}: firing counted "
-                      f"({(target.get('status') or {}).get('state') or 'new'})", flush=True)
-                return None
-            continue
-        body = {"apiVersion": f"{GROUP}/{VERSION}", "kind": "Incident",
-                "metadata": {"name": name, "namespace": ns, "labels": {LABEL_ALERT: alert_ref}},
-                "spec": {"alertRef": {"name": alert_ref, "namespace": ns}, "trigger": "alert",
-                         "prompt": prompt, "triggeredAt": now}}
+        incident = _k8s("GET", _incidents(ns, name))
+        st = incident.get("status") or {}
         try:
-            created = _k8s("POST", _incidents(ns), body)
+            _patch_status(ns, incident, {"firings": int(st.get("firings") or 0) + 1,
+                                         "lastFiredAt": now})
         except requests.HTTPError as e:
-            if _http_status(e) == 409:  # a concurrent firing created it: count on it instead
+            if _http_status(e) == 409:
                 continue
             raise
-        # Unconditioned: the controller may already have touched the new object, and no other
-        # writer sets these fields yet.
-        _k8s("PATCH", _incidents(ns, name),
-             {"status": {"state": "Analyzing", "firings": 1, "lastFiredAt": now}},
-             subresource="status")
-        print(f"[incident] {ns}/{name}: opened", flush=True)
-        return created
-    raise RuntimeError(f"alert {ns}/{alert_ref}: no incident write succeeded in "
-                       f"{WRITE_ATTEMPTS} attempts")
+        print(f"[incident] {ns}/{name}: firing counted ({st.get('state') or 'new'})", flush=True)
+        return
+    raise RuntimeError(f"incident {ns}/{name}: no firing write succeeded in {WRITE_ATTEMPTS} attempts")
+
+
+def _open_or_count(ns, alert, prompt, at, grace):
+    """One firing: count it on the incident _pick chooses, or create one.
+
+    Returns the new Incident, or None when the firing was counted on an existing one."""
+    alert_ref = alert["metadata"]["name"]
+    now = at.isoformat()
+    target = _pick(alert, _alert_incidents(ns, alert_ref), at, grace)
+    if target is not None:
+        _count_on(ns, target["metadata"]["name"], now)
+        return None
+    name = incident_name(alert_ref, at)
+    body = {"apiVersion": f"{GROUP}/{VERSION}", "kind": "Incident",
+            "metadata": {"name": name, "namespace": ns, "labels": {LABEL_ALERT: alert_ref}},
+            "spec": {"alertRef": {"name": alert_ref, "namespace": ns}, "trigger": "alert",
+                     "prompt": prompt, "triggeredAt": now}}
+    try:
+        created = _k8s("POST", _incidents(ns), body)
+    except requests.HTTPError as e:
+        if _http_status(e) != 409:
+            raise
+        _count_on(ns, name, now)  # a concurrent firing created it this second
+        return None
+    # Unconditioned: the controller may already have touched the new object, and no other
+    # writer sets these fields yet.
+    _k8s("PATCH", _incidents(ns, name),
+         {"status": {"state": "Analyzing", "firings": 1, "lastFiredAt": now}},
+         subresource="status")
+    print(f"[incident] {ns}/{name}: opened", flush=True)
+    return created
 
 
 def _finish(ns, name, status):
@@ -247,9 +289,10 @@ def recover_interrupted(ns=NAMESPACE):
     """Open every incident a restart left Analyzing (or before its first status write), with the
     reason in `error`.
 
-    An Analyzing incident is open, so it would count every later firing of its alert and never be
-    checked. Open, it can be closed, and the next firing opens a fresh one. An analysis still
-    running in another replica overwrites `error` when it finishes."""
+    An Analyzing incident takes every firing of its alert that no analyzed incident covers, and is
+    never checked. Open with `error`, it says why it has no scripts and can be closed, and the next
+    firing then opens a fresh one. An analysis still running in another replica overwrites `error`
+    when it finishes."""
     try:
         items = _k8s("GET", f"{_incidents(ns)}?labelSelector={quote(LABEL_ALERT, safe='')}")
     except Exception as e:  # noqa: BLE001 — no Incident CRD yet, or no apiserver: nothing to recover
@@ -264,36 +307,6 @@ def recover_interrupted(ns=NAMESPACE):
         except Exception as e:  # noqa: BLE001 — a 409 means another writer moved it
             print(f"[incident] {ns}/{incident['metadata']['name']}: recovery skipped ({e})",
                   flush=True)
-
-
-# A DNS-1123 subdomain: what an Alert CR's metadata.name, and so its HyperDX alert's name, can be.
-_ALERT_NAME = re.compile(r"[a-z0-9]([-a-z0-9.]*[a-z0-9])?")
-
-
-def _alert_name_from_title(title):
-    """The Alert CR name a webhook title carries, or "" if it carries none.
-
-    HyperDX titles a notification with a state emoji ("🚨 " firing, "✅ " resolved) followed by
-    the HyperDX alert's name, and the reconciler names that alert after its CR's metadata.name."""
-    name = re.sub(r"^\W+", "", (title or "").strip())
-    return name if len(name) <= 253 and _ALERT_NAME.fullmatch(name) else ""
-
-
-def _match_alert(alert_name, ns):
-    """The Alert CR (observability.krateo.io) a webhook fired for, by EXACT metadata.name, or None.
-
-    Exact because anything looser picks the wrong CR: two Alerts may share a displayName, and one
-    displayName may contain another ("Pod crash-looping" is inside "Krateo — platform pod
-    crash-looping"). Returns None when the title names no Alert or the lookup fails."""
-    name = _alert_name_from_title(alert_name)
-    if not name:
-        return None
-    try:
-        return _k8s("GET", f"/apis/{GROUP}/{VERSION}/namespaces/{ns}/alerts/{name}")
-    except Exception as e:  # noqa: BLE001 — a 404 is the common case; HyperDX re-sends while ALERT
-        if getattr(getattr(e, "response", None), "status_code", None) != 404:
-            print(f"[webhook] Alert {ns}/{name} lookup failed ({e})", flush=True)
-        return None
 
 
 def _tool_results(parts):
@@ -335,11 +348,31 @@ def _tool_results(parts):
 
 
 def a2a_analyze(prompt, context_id=None):
-    """(text, tool_ledger) from the Autopilot A2A agent.
+    """(text, tool_ledger) from the RCA agent (AUTOPILOT_A2A_URL, incident-agent).
 
-    A stable `context_id` continues ONE kagent thread across re-runs of the same alert (omitted =
-    a fresh thread). `tool_ledger` is what the agent's tools ACTUALLY returned; report_v2 uses it
+    `context_id` names the kagent thread, the incident's own (omitted = a fresh thread). `tool_ledger` is what the agent's tools ACTUALLY returned; report_v2 uses it
     to bound confidence rather than trusting the model's account of its own evidence (#30)."""
+    return _a2a(AUTOPILOT_A2A, prompt, context_id=context_id, timeout=A2A_TIMEOUT)
+
+
+def a2a_compare(prompt):
+    """(equal, reason) from the comparison agent (COMPARE_A2A_URL, autopilot).
+
+    Each call is a fresh kagent thread, so a verdict rests on its prompt alone. Raises
+    compare.NoVerdict on any failure, a 429 from the gateway's incident-compare limit included."""
+    try:
+        text, _ = _a2a(COMPARE_A2A, prompt, timeout=COMPARE_TIMEOUT, headers=COMPARE_HEADERS)
+    except requests.HTTPError as e:
+        if _http_status(e) == 429:
+            raise compare.NoVerdict("rate-limited") from e
+        raise compare.NoVerdict(f"the call failed: {str(e)[:200]}") from e
+    except Exception as e:  # noqa: BLE001 — a timeout or a broken stream is no verdict either
+        raise compare.NoVerdict(f"the call failed: {str(e)[:200]}") from e
+    return compare.parse_verdict(text)
+
+
+def _a2a(url, prompt, context_id=None, timeout=A2A_TIMEOUT, headers=None):
+    """(text, tool_ledger) of one A2A `message/stream` call to `url`."""
     message = {"kind": "message", "messageId": str(uuid.uuid4()), "role": "user",
                "parts": [{"kind": "text", "text": prompt}]}
     if context_id:
@@ -347,13 +380,13 @@ def a2a_analyze(prompt, context_id=None):
     body = {"id": 1, "jsonrpc": "2.0", "method": "message/stream", "params": {"message": message}}
     out = ""
     ledger, seen = [], set()
-    headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
-    # Present the service JWT so incident-agent can propagate it to its agentgateway-gated MCP tools.
+    headers = {"Accept": "text/event-stream", "Content-Type": "application/json", **(headers or {})}
+    # The service JWT: the agentgateway authenticates it, and the agent propagates it to its gated
+    # MCP tools and sub-agents.
     jwt = _service_jwt()
     if jwt:
         headers["Authorization"] = f"Bearer {jwt}"
-    with requests.post(AUTOPILOT_A2A, json=body, stream=True, timeout=A2A_TIMEOUT,
-                       headers=headers) as resp:
+    with requests.post(url, json=body, stream=True, timeout=timeout, headers=headers) as resp:
         resp.raise_for_status()
         for raw in resp.iter_lines(decode_unicode=True):
             if not raw or not raw.startswith("data:"):
@@ -415,51 +448,54 @@ def build_prompt(alert_name, alert_state, where=None, message=None):
 
 
 def process(payload):
-    # The body is hyperdx_v2.DEFAULT_WEBHOOK_BODY: alertName is the notification title, which
-    # carries the Alert CR's metadata.name, and state is ALERT or OK.
+    """A HyperDX notification. It opens nothing: the reconciler mirrors every alert's state on
+    each pass and evaluates the firing ones (fire), so a notification would only fire twice. The
+    webhook exists because a HyperDX alert needs a channel; the body is
+    hyperdx_v2.DEFAULT_WEBHOOK_BODY."""
     title = (payload.get("alertName") or payload.get("title") or payload.get("name")
              or (payload.get("alert") or {}).get("name") or "")
-    alert_state = str(payload.get("state") or payload.get("status") or "ALERT").upper()
-    alert_ns = payload.get("alertNamespace") or NAMESPACE
-    if alert_state == "OK":
-        print(f"[webhook] {title!r} resolved; nothing to analyze", flush=True)
-        return
-    # The fired Alert CR scopes the RCA (spec.where/message) and names the incident
-    # (metadata.name/namespace). Without one there is no scope, so nothing is recorded.
-    matched = _match_alert(title, alert_ns)
-    if matched is None:
-        print(f"[webhook] {title!r} names no Alert in {alert_ns}; skipping", flush=True)
-        return
-    m_spec = matched.get("spec") or {}
-    m_meta = matched.get("metadata") or {}
-    where, message = m_spec.get("where"), m_spec.get("message")
-    alert_ref = m_meta.get("name", "")                        # exact key → /alerts/{ns}/{name}
-    alert_namespace = m_meta.get("namespace") or alert_ns     # the Alert CR's real namespace
-    analyze(m_spec.get("displayName") or alert_ref, alert_state, alert_ref, alert_namespace,
-            where=where, message=message, interval=m_spec.get("interval"))
+    state = str(payload.get("state") or payload.get("status") or "").upper()
+    print(f"[webhook] {title!r} {state or '?'}: the reconciler evaluates it on its next pass",
+          flush=True)
 
 
-def analyze(alert_name, alert_state, alert_ref, alert_namespace, where=None, message=None,
-            interval=None):
-    """One firing of an alert, through Policy A.
+def fire(alert):
+    """One evaluation of a firing Alert CR, from the reconciler's pass (about every 60 s).
 
-    `alert_name` is the displayName, `alert_ref` the Alert's metadata.name, `interval` its
-    spec.interval; the incident lives in the Alert's namespace. A firing on an open incident, or
-    within one interval of the latest one's resolution, is counted on it and runs no RCA.
-    """
+    The firing counts on the incident _pick chooses, or opens a new one whose RCA then runs in
+    this call. `alert` is the CR: its metadata.name keys the incidents and their label, its
+    namespace holds them, spec.interval is the Resolved grace window. One evaluation per alert
+    runs at a time: while one is still comparing, the alert's next firing is skipped."""
+    meta, spec = alert.get("metadata") or {}, alert.get("spec") or {}
+    alert_ref = meta.get("name", "")
+    ns = meta.get("namespace") or NAMESPACE
     if len(alert_ref) > 63:
         print(f"[incident] alert {alert_ref!r}: a name over 63 characters cannot label an "
               "Incident; skipping", flush=True)
         return
-    ns = alert_namespace
-    prompt = build_prompt(alert_name, alert_state, where, message)
+    key = (ns, alert_ref)
+    with _firing_lock:
+        if key in _firing:
+            print(f"[incident] alert {ns}/{alert_ref}: the previous evaluation is still running; "
+                  "skipping this firing", flush=True)
+            return
+        _firing.add(key)
+    alert = {**alert, "metadata": {**meta, "namespace": ns}}
+    prompt = build_prompt(spec.get("displayName") or alert_ref, "ALERT", spec.get("where"),
+                          spec.get("message"))
     try:
-        with _create_lock:
-            created = _open_or_count(ns, alert_ref, prompt, datetime.now(timezone.utc),
-                                     interval_seconds(interval))
+        created = _open_or_count(ns, alert, prompt, datetime.now(timezone.utc),
+                                 interval_seconds(spec.get("interval")))
+    except compare.NoVerdict as e:
+        print(f"[incident] alert {ns}/{alert_ref}: no comparison verdict ({e}); the next pass "
+              "retries", flush=True)
+        return
     except Exception as e:  # noqa: BLE001 — a failed write loses this firing, not the next one
         print(f"[err] alert {ns}/{alert_ref}: firing not recorded ({e})", flush=True)
         return
+    finally:
+        with _firing_lock:
+            _firing.discard(key)
     if created is not None:
         run_analysis(ns, created["metadata"]["name"], prompt)
 
@@ -509,13 +545,11 @@ class Handler(BaseHTTPRequestHandler):
         # its API and may deliver to a redacted/normalised path, so we don't gate on "/webhook".
         length = int(self.headers.get("Content-Length", 0) or 0)
         raw = self.rfile.read(length) if length else b"{}"
-        print(f"[webhook] POST {self.path} ({length}B)", flush=True)  # observe the delivered path
         try:
             payload = json.loads(raw or b"{}")
         except json.JSONDecodeError:
             payload = {"raw": raw.decode("utf-8", "replace")}
-        # Ack fast; analyse in the background so HyperDX's webhook doesn't time out.
-        threading.Thread(target=process, args=(payload,), daemon=True).start()
+        process(payload)
         self.send_response(202); self.end_headers(); self.wfile.write(b"accepted")
 
     def log_message(self, *args):  # quieter logs
@@ -525,10 +559,11 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     # Before any firing can open an incident, so only incidents a previous process left are swept.
     recover_interrupted()
-    # Background: reconcile Alert CRs -> HyperDX (config + status) via the session API.
+    # Background: reconcile Alert CRs -> HyperDX (config + status) and fire the firing ones.
     if os.environ.get("RECONCILER_ENABLED", "true").lower() == "true":
         import reconciler  # imported here so the webhook path has no hard dep on it
         threading.Thread(target=reconciler.run_forever, daemon=True).start()
     port = int(os.environ.get("PORT", "8080"))
-    print(f"krateo-alert-troubleshooter listening on :{port} → A2A {AUTOPILOT_A2A}", flush=True)
+    print(f"krateo-alert-troubleshooter listening on :{port} → RCA {AUTOPILOT_A2A}, compare "
+          f"{COMPARE_A2A}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()

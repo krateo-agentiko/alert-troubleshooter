@@ -42,12 +42,14 @@ class FakeK8s:
         self.rv += 1
         obj["metadata"]["resourceVersion"] = str(self.rv)
 
-    def put(self, ns, name, alert, state=None, firings=1, created="2026-09-25T10:00:00Z"):
-        """Seed an Incident as the apiserver would hold it."""
+    def put(self, ns, name, alert, state=None, firings=1, created="2026-09-25T10:00:00Z",
+            root_cause=None):
+        """Seed an Incident as the apiserver would hold it; `root_cause` gives it an analysis."""
         obj = {"metadata": {"name": name, "namespace": ns, "creationTimestamp": created,
                             "labels": {"observability.krateo.io/alert": alert}},
                "spec": {"alertRef": {"name": alert, "namespace": ns}},
-               "status": {"firings": firings} | ({"state": state} if state else {})}
+               "status": {"firings": firings} | ({"state": state} if state else {})
+               | ({"rootCause": {"statement": root_cause}} if root_cause else {})}
         self._bump(obj)
         self.incidents[(ns, name)] = obj
         return obj

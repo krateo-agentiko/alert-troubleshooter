@@ -1,7 +1,7 @@
 ---
 type: Example
 title: Webhook example
-description: A sample HyperDX alert payload and the report it yields.
+description: A sample HyperDX notification payload.
 tags: [observability, alerts]
 timestamp: 2026-08-20T00:00:00Z
 ---
@@ -13,7 +13,6 @@ curl -XPOST http://krateo-alert-troubleshooter.krateo-system.svc:8080/webhook -d
 ```
 
 `alert.json` is the body HyperDX sends: `alertName` is the notification title, a state emoji plus
-the HyperDX alert name, which is the `Alert` CR's `metadata.name`. The handler analyzes only a
-title that names an existing `Alert` exactly, and only for `state: ALERT`. An `Incident` named
-`<Alert name>-<yyyymmdd-hhmmss>` opens with the analysis or, while the Alert has an open one, that
-incident's `status.firings` goes up.
+the HyperDX alert name, which is the `Alert` CR's `metadata.name`. The handler logs it and opens
+nothing: the reconciler's pass fires an `Alert` whose HyperDX state is ALERT, and that firing opens
+an `Incident` or counts on an open one (see [overview](../../docs/overview.md#incidents)).

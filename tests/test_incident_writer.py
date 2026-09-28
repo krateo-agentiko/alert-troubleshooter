@@ -1,7 +1,8 @@
-"""The Incident writer, Policy A: one open incident per alert, one RCA per incident.
+"""The Incident writer: each firing counts on an open incident of the same problem or opens a new
+one, and each incident gets one RCA.
 
 Every apiserver call goes to tests/fake_k8s.FakeK8s, which keeps the Incident CRD's rules the
-writer depends on; the RCA is a stub returning a canned answer.
+writer depends on; the RCA and the comparison are stubs returning canned answers.
 """
 import json
 import os
@@ -14,6 +15,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
+import compare  # noqa: E402
 import handler  # noqa: E402
 from fake_k8s import FakeK8s, http_error  # noqa: E402
 
@@ -45,12 +47,15 @@ class WriterCase(unittest.TestCase):
     def setUp(self):
         self.k8s = FakeK8s([alert_cr()])
         self.rca, self.answer, self.during_rca = [], answer(), None
-        self._orig = (handler._k8s, handler.a2a_analyze)
+        # The comparison agent's verdict per compared incident name: True, False, or an exception.
+        self.compared, self.verdicts = [], {}
+        self._orig = (handler._k8s, handler.a2a_analyze, handler.a2a_compare)
         handler._k8s = self.k8s
         handler.a2a_analyze = self._a2a
+        handler.a2a_compare = self._compare
 
     def tearDown(self):
-        handler._k8s, handler.a2a_analyze = self._orig
+        handler._k8s, handler.a2a_analyze, handler.a2a_compare = self._orig
 
     def _a2a(self, prompt, context_id=None):
         self.rca.append((prompt, context_id))
@@ -60,8 +65,23 @@ class WriterCase(unittest.TestCase):
             raise self.answer
         return self.answer, []
 
-    def fire(self, alert=ALERT, ns=NS, **kw):
-        handler.analyze("CompositionDefinition not ready", "ALERT", alert, ns, **kw)
+    def _compare(self, prompt):
+        name = next(n for (_, n) in self.k8s.incidents if f"Incident A is open: {n}," in prompt)
+        self.compared.append((name, prompt))
+        verdict = self.verdicts.get(name, False)
+        if isinstance(verdict, Exception):
+            raise verdict
+        return verdict, "stub"
+
+    def fire(self, alert=ALERT, ns=NS, where="Body LIKE '%x%'", interval=None):
+        cr = alert_cr(alert, where=where, interval=interval)
+        cr["metadata"]["namespace"] = ns
+        handler.fire(cr)
+
+    def analyzed(self, name, created="2026-09-25T10:00:00Z", state="Open"):
+        """An open incident of ALERT with an analysis, which a firing is compared with."""
+        return self.k8s.put(NS, name, ALERT, state=state, created=created,
+                            root_cause=f"the cause of {name}")
 
     def status_writes(self):
         return [body["status"] for method, _, sub, body in self.k8s.calls
@@ -109,25 +129,102 @@ class TestOpening(WriterCase):
         self.fire(alert="a" * 64)
         self.assertEqual((self.k8s.incidents, self.rca), ({}, []))
 
-    def test_the_webhook_takes_the_same_path(self):
+    def test_a_webhook_notification_opens_nothing(self):
+        """The reconciler's pass fires alerts; a notification would only fire twice."""
         handler.process({"alertName": f"🚨 {ALERT}", "state": "ALERT"})
-        inc = self.k8s.only()
-        self.assertEqual(inc["status"]["state"], "Open")
-        self.assertIn("CompositionDefinition not ready", inc["spec"]["prompt"])
+        self.assertEqual((self.k8s.incidents, self.k8s.calls, self.rca), ({}, [], []))
 
 
-class TestPolicyA(WriterCase):
-    def test_a_firing_on_an_open_incident_is_counted_and_runs_no_RCA(self):
+class TestOpeningPolicy(WriterCase):
+    def test_the_same_problem_is_counted_on_its_incident_and_runs_no_RCA(self):
+        for state in ("Open", "Verifying"):
+            with self.subTest(state=state):
+                self.k8s.incidents.clear()
+                self.analyzed(f"{ALERT}-x", state=state)
+                self.verdicts = {f"{ALERT}-x": True}
+                self.fire()
+                inc = self.k8s.only()
+                self.assertEqual(inc["status"]["firings"], 2)
+                self.assertIn("lastFiredAt", inc["status"])
+                self.assertEqual(inc["status"]["state"], state)
+        self.assertEqual(self.rca, [])
+
+    def test_a_different_problem_opens_a_second_incident(self):
+        self.analyzed(f"{ALERT}-x")
+        self.fire()
+        self.assertEqual([n for n, _ in self.compared], [f"{ALERT}-x"])
+        self.assertEqual(len(self.k8s.incidents), 2)
+        self.assertEqual(len(self.rca), 1)
+        self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-x")]["status"]["firings"], 1)
+
+    def test_open_incidents_are_compared_newest_first_until_one_is_equal(self):
+        self.analyzed(f"{ALERT}-old", created="2026-09-25T08:00:00Z")
+        self.analyzed(f"{ALERT}-mid", created="2026-09-25T09:00:00Z")
+        self.analyzed(f"{ALERT}-new", created="2026-09-25T10:00:00Z")
+        self.verdicts = {f"{ALERT}-mid": True, f"{ALERT}-old": True}
+        self.fire()
+        self.assertEqual([n for n, _ in self.compared], [f"{ALERT}-new", f"{ALERT}-mid"])
+        self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-mid")]["status"]["firings"], 2)
+        self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-old")]["status"]["firings"], 1)
+
+    def test_the_comparison_sees_the_alert_and_the_incident(self):
+        self.analyzed(f"{ALERT}-x")
+        self.fire(where="Body LIKE '%boom%'")
+        prompt = self.compared[0][1]
+        self.assertIn("`Body LIKE '%boom%'`", prompt)
+        self.assertIn(f"the cause of {ALERT}-x", prompt)
+        self.assertIn("Incident B would open now", prompt)
+
+    def test_an_incident_without_an_analysis_takes_the_firing_uncompared(self):
+        """Analyzing, or its RCA failed: nothing to compare with, and a new one would rerun it."""
         for state in ("Analyzing", "Open", "Verifying"):
             with self.subTest(state=state):
                 self.k8s.incidents.clear()
                 self.k8s.put(NS, f"{ALERT}-x", ALERT, state=state, firings=3)
                 self.fire()
-                inc = self.k8s.only()
-                self.assertEqual(inc["status"]["firings"], 4)
-                self.assertIn("lastFiredAt", inc["status"])
-                self.assertEqual(inc["status"]["state"], state)
+                self.assertEqual(self.k8s.only()["status"]["firings"], 4)
+        self.assertEqual((self.compared, self.rca), ([], []))
+
+    def test_an_equal_analyzed_incident_takes_the_firing_before_an_analyzing_one(self):
+        self.analyzed(f"{ALERT}-x", created="2026-09-25T09:00:00Z")
+        self.k8s.put(NS, f"{ALERT}-y", ALERT, state="Analyzing", created="2026-09-25T10:00:00Z")
+        self.verdicts = {f"{ALERT}-x": True}
+        self.fire()
+        self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-x")]["status"]["firings"], 2)
+        self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-y")]["status"]["firings"], 1)
+
+    def test_a_different_problem_waits_on_an_incident_still_analyzing(self):
+        self.analyzed(f"{ALERT}-x", created="2026-09-25T09:00:00Z")
+        self.k8s.put(NS, f"{ALERT}-y", ALERT, state="Analyzing", created="2026-09-25T10:00:00Z")
+        self.fire()
+        self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-y")]["status"]["firings"], 2)
+        self.assertEqual((len(self.k8s.incidents), self.rca), (2, []))
+
+    def test_no_verdict_opens_nothing_and_counts_nothing(self):
+        """A failed or rate-limited comparison leaves "new problem?" unknown: the next pass retries."""
+        self.analyzed(f"{ALERT}-x")
+        self.verdicts = {f"{ALERT}-x": compare.NoVerdict("rate-limited")}
+        self.fire()
+        self.assertEqual(self.k8s.only()["status"]["firings"], 1)
         self.assertEqual(self.rca, [])
+
+    def test_no_verdict_on_one_still_counts_on_another_that_is_equal(self):
+        self.analyzed(f"{ALERT}-old", created="2026-09-25T09:00:00Z")
+        self.analyzed(f"{ALERT}-new", created="2026-09-25T10:00:00Z")
+        self.verdicts = {f"{ALERT}-new": compare.NoVerdict("timed out"), f"{ALERT}-old": True}
+        self.fire()
+        self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-old")]["status"]["firings"], 2)
+
+    def test_an_evaluation_still_running_skips_the_alerts_next_firing(self):
+        self.analyzed(f"{ALERT}-x")
+
+        def slow(prompt):
+            self.fire()                        # the next pass, while this comparison runs
+            return True, "stub"
+        handler.a2a_compare = slow
+        self.fire()
+        self.assertEqual(self.k8s.only()["status"]["firings"], 2)
+        self.assertEqual(handler._firing, set())
 
     def test_an_ended_incident_does_not_count_a_new_firing_opens_one(self):
         self.k8s.put(NS, f"{ALERT}-resolved", ALERT, state="Resolved")
@@ -136,7 +233,7 @@ class TestPolicyA(WriterCase):
         self.k8s.put(NS, f"{ALERT}-closed", ALERT, state="Closed")
         self.fire()
         self.assertEqual(len(self.k8s.incidents), 3)
-        self.assertEqual(len(self.rca), 1)
+        self.assertEqual((len(self.rca), self.compared), (1, []))
         self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-resolved")]["status"]["firings"], 1)
 
     def test_another_alerts_incident_is_not_counted(self):
@@ -144,7 +241,7 @@ class TestPolicyA(WriterCase):
         self.fire()
         self.assertEqual(len(self.k8s.incidents), 2)
 
-    def test_the_newest_open_incident_counts(self):
+    def test_the_newest_unanalyzed_incident_counts(self):
         self.k8s.put(NS, f"{ALERT}-old", ALERT, state="Open", created="2026-09-25T09:00:00Z")
         self.k8s.put(NS, f"{ALERT}-new", ALERT, state="Open", created="2026-09-25T10:00:00Z")
         self.fire()
@@ -154,7 +251,8 @@ class TestPolicyA(WriterCase):
     def test_a_concurrent_status_write_is_not_lost(self):
         """The controller appends a check between our read and our write: the conditioned
         patch is refused, re-read and retried, and both writes survive."""
-        self.k8s.put(NS, f"{ALERT}-x", ALERT, state="Open", firings=2)
+        self.k8s.put(NS, f"{ALERT}-x", ALERT, state="Open", firings=2, root_cause="c")
+        self.verdicts = {f"{ALERT}-x": True}
         hits = []
 
         def controller(ns, name):
@@ -166,6 +264,7 @@ class TestPolicyA(WriterCase):
         st = self.k8s.only()["status"]
         self.assertEqual(st["firings"], 3)
         self.assertEqual(st["checks"], [{"script": "precondition", "exit": 1}])
+        self.assertEqual(len(self.compared), 1)  # the retry re-reads; it does not re-compare
 
     def test_a_concurrent_create_is_counted_on(self):
         """Another firing created the same-second incident first: this one counts on it."""
@@ -228,6 +327,22 @@ class TestResolvedGrace(WriterCase):
         self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-o")]["status"]["firings"], 2)
         self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-r")]["status"]["firings"], 1)
 
+    def test_a_different_problem_inside_the_window_counts_on_the_Resolved_incident(self):
+        """Grace only stops a new incident: an open one of the same problem still takes it."""
+        self.analyzed(f"{ALERT}-o", created="2026-09-25T09:00:00Z")
+        self.ended(f"{ALERT}-r", "Resolved", 10, created="2026-09-25T10:00:00Z")
+        self.fire()
+        self.assertEqual([n for n, _ in self.compared], [f"{ALERT}-o"])
+        self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-r")]["status"]["firings"], 2)
+        self.assertEqual((len(self.k8s.incidents), self.rca), (2, []))
+
+    def test_no_verdict_inside_the_window_counts_on_the_Resolved_incident(self):
+        self.analyzed(f"{ALERT}-o", created="2026-09-25T09:00:00Z")
+        self.ended(f"{ALERT}-r", "Resolved", 10, created="2026-09-25T10:00:00Z")
+        self.verdicts = {f"{ALERT}-o": compare.NoVerdict("rate-limited")}
+        self.fire()
+        self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-r")]["status"]["firings"], 2)
+
     def test_the_window_is_the_alerts_interval(self):
         for interval, seconds_ago, counted in (("15m", 600, True), ("1m", 90, False),
                                                (None, 200, True), ("weird", 400, False)):
@@ -242,12 +357,12 @@ class TestResolvedGrace(WriterCase):
         inc = {"metadata": {"name": "r", "creationTimestamp": "t"},
                "status": {"state": "Resolved", "resolution": {"by": "verify",
                                                               "at": "2026-09-25T14:00:00Z"}}}
-        pick = handler.incident_to_count
-        self.assertIs(pick([inc], resolved + timedelta(seconds=299), 300), inc)
-        self.assertIsNone(pick([inc], resolved + timedelta(seconds=300), 300))
+        within = handler.resolved_within
+        self.assertTrue(within(inc, resolved + timedelta(seconds=299), 300))
+        self.assertFalse(within(inc, resolved + timedelta(seconds=300), 300))
         for broken in ({}, {"by": "verify"}, {"by": "verify", "at": "not a time"}):
             inc["status"]["resolution"] = broken
-            self.assertIsNone(pick([inc], resolved, 300))
+            self.assertFalse(within(inc, resolved, 300))
 
     def test_a_concurrent_write_on_the_Resolved_incident_is_retried(self):
         self.ended(f"{ALERT}-r", "Resolved", 60)
@@ -261,11 +376,6 @@ class TestResolvedGrace(WriterCase):
         self.fire()
         self.assertEqual(self.k8s.only()["status"]["firings"], 2)
 
-    def test_the_webhook_passes_the_alerts_interval(self):
-        self.k8s.alerts[ALERT] = alert_cr(interval="15m")
-        self.ended(f"{ALERT}-r", "Resolved", 600)
-        handler.process({"alertName": f"🚨 {ALERT}", "state": "ALERT"})
-        self.assertEqual(self.k8s.only()["status"]["firings"], 2)
 
 
 class TestAnalysisOutcome(WriterCase):

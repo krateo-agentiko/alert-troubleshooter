@@ -268,7 +268,7 @@ class TestHowToFix(unittest.TestCase):
 
 
 class TestHandlerWiring(unittest.TestCase):
-    """The thin handler-side pieces: the prompt carries the contract; the webhook finds its Alert."""
+    """The thin handler-side piece: the prompt carries the contract."""
 
     def _handler(self):
         import handler  # imports requests; safe — the server only starts under __main__
@@ -295,36 +295,6 @@ class TestHandlerWiring(unittest.TestCase):
         self.assertIn("how to fix it.", p)
         self.assertNotIn("remediationPlan", p)
         self.assertNotIn("remediation plan", p)
-
-    def test_match_alert_looks_up_the_exact_name_the_title_carries(self):
-        """The title is a state emoji + the HyperDX alert name, which is the Alert's metadata.name;
-        _match_alert GETs exactly that CR."""
-        h = self._handler()
-        alert_cr = {"metadata": {"name": "error-log-volume", "namespace": "krateo-system"},
-                    "spec": {"displayName": "Error log volume"},
-                    "status": {"hyperdxAlertId": "6a55c0ba903d2bac4e3615e2", "state": "ALERT"}}
-        paths = []
-        orig = h._k8s
-        h._k8s = lambda method, path, body=None, subresource="": paths.append(path) or alert_cr
-        try:
-            m = h._match_alert("🚨 error-log-volume", "krateo-system")
-        finally:
-            h._k8s = orig
-        self.assertEqual(m["metadata"]["name"], "error-log-volume")
-        self.assertEqual(paths, ["/apis/observability.krateo.io/v1alpha1/namespaces/krateo-system"
-                                 "/alerts/error-log-volume"])
-
-    def test_match_alert_returns_none_when_the_title_is_no_alert_name(self):
-        """A displayName title (spaces, capitals) is not a metadata.name: no lookup, no match."""
-        h = self._handler()
-        calls = []
-        orig = h._k8s
-        h._k8s = lambda *a, **k: calls.append(a) or {}
-        try:
-            self.assertIsNone(h._match_alert("🚨 Pod crash-looping", "krateo-system"))
-        finally:
-            h._k8s = orig
-        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":
