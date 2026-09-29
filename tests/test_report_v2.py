@@ -245,6 +245,63 @@ class TestHowToFix(unittest.TestCase):
         v2 = self._parse({**FIX, "description": "roll back"})
         self.assertEqual(sorted(v2["howToFix"]), ["apply", "precondition", "rollback", "verify"])
 
+    PATCH = {"verb": "patch", "apiVersion": "apps/v1", "resource": "deployments",
+             "namespace": "prod", "name": "payment-api",
+             "payload": {"spec": {"template": {"spec": {"imagePullSecrets": [{"name": "reg"}]}}}}}
+
+    def test_a_usable_apply_action_is_kept(self):
+        v2 = self._parse({**FIX, "applyAction": self.PATCH})
+        self.assertEqual(v2["howToFix"]["applyAction"], self.PATCH)
+        self.assertEqual(v2["missingContext"], ["gap"])
+
+    def test_a_create_and_a_delete_are_kept(self):
+        create = {"verb": "create", "apiVersion": "v1", "resource": "configmaps", "namespace": "prod",
+                  "name": "flags", "payload": {"apiVersion": "v1", "kind": "ConfigMap",
+                                               "metadata": {"name": "flags"}, "data": {"a": "1"}}}
+        delete = {"verb": "delete", "apiVersion": "v1", "resource": "pods", "namespace": "prod",
+                  "name": "stuck-0"}
+        for action in (create, delete):
+            with self.subTest(verb=action["verb"]):
+                self.assertEqual(self._parse({**FIX, "applyAction": action})["howToFix"]["applyAction"],
+                                 action)
+
+    def test_a_cluster_scoped_action_has_no_namespace(self):
+        action = {"verb": "patch", "apiVersion": "rbac.authorization.k8s.io/v1",
+                  "resource": "clusterroles", "namespace": "", "name": "viewer",
+                  "payload": {"metadata": {"labels": {"a": "b"}}}}
+        kept = self._parse({**FIX, "applyAction": action})["howToFix"]["applyAction"]
+        self.assertNotIn("namespace", kept)
+
+    def test_an_unusable_apply_action_is_left_out_alone_and_noted(self):
+        cases = {
+            "verb 'apply' is not one of patch, create, delete": {**self.PATCH, "verb": "apply"},
+            "bad resource": {**self.PATCH, "resource": "Deployment/x"},
+            "bad apiVersion": {**self.PATCH, "apiVersion": "apps"},
+            "no payload": {**self.PATCH, "payload": {}},
+            "a delete takes no payload": {**self.PATCH, "verb": "delete"},
+            "it deletes namespaces": {"verb": "delete", "apiVersion": "v1", "resource": "namespaces",
+                                      "name": "prod"},
+            "the payload's apiVersion, kind or metadata does not match the target":
+                {**self.PATCH, "verb": "create"},
+            "not an object": "kubectl patch deployment payment-api",
+        }
+        for why, action in cases.items():
+            with self.subTest(why=why):
+                v2 = self._parse({**FIX, "applyAction": action})
+                self.assertEqual(v2["howToFix"], FIX)
+                self.assertEqual(v2["missingContext"][-1], f"No usable applyAction ({why}): the "
+                                 "portal offers no Apply button, so run the apply script.")
+
+    def test_an_apply_action_without_the_scripts_is_no_fix(self):
+        v2 = self._parse({"applyAction": self.PATCH})
+        self.assertNotIn("howToFix", v2)
+
+    def test_a_missing_rollback_and_a_bad_action_are_both_noted(self):
+        v2 = self._parse({"precondition": PRECONDITION, "apply": APPLY, "verify": VERIFY,
+                          "applyAction": {"verb": "x"}})
+        self.assertEqual([m.split(" (")[0] for m in v2["missingContext"]],
+                         ["gap", "No usable rollback", "No usable applyAction"])
+
     def test_a_non_object_is_dropped(self):
         v2 = self._parse("kubectl set image deployment/payment-api api=payment:v8")
         self.assertNotIn("howToFix", v2)
@@ -291,6 +348,7 @@ class TestHandlerWiring(unittest.TestCase):
         self.assertIn("TEST THE ROOT-CAUSE OBJECT, NEVER THE ALERT'S SIGNAL", p)
         self.assertIn("killed after 60 seconds", p)
         self.assertIn('"rollback": "<bash script>"', p)
+        self.assertIn('"applyAction": {"verb": "patch|create|delete"', p)
         self.assertIn("ROLLBACK undoes apply", p)
         self.assertIn("how to fix it.", p)
         self.assertNotIn("remediationPlan", p)
