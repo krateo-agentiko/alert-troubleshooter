@@ -39,6 +39,15 @@ V2_STATUS_KEYS = ("analyzedResources", "sources", "missingContext", "assumptions
 HOW_TO_FIX_SCRIPTS = ("precondition", "apply", "verify")
 HOW_TO_FIX_ROLLBACK = "rollback"
 SCRIPT_MAX_CHARS = 16384
+# status.howToFix.applyAction: apply as one Kubernetes API write, when it is one. The portal's
+# Apply button sends it as the clicking user, then marks the incident applied.
+HOW_TO_FIX_ACTION = "applyAction"
+ACTION_VERBS = ("patch", "create", "delete")
+# Deleting one of these takes everything under it along (the scripts' rule, too).
+ACTION_NEVER_DELETE = ("namespaces", "nodes", "customresourcedefinitions")
+_API_VERSION_RE = re.compile(r"^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?v[0-9]+((alpha|beta)[0-9]+)?$")
+_RESOURCE_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
 
 STRUCTURED_OUTPUT_INSTRUCTIONS = """
 
@@ -53,7 +62,8 @@ after it) containing a machine-readable summary of the SAME investigation, with 
   "assumptions": ["what you assumed because of that"],
   "reasoningTrace": [{"step": 1, "statement": "...", "evidenceRefs": [0]}],
   "rootCause": {"statement": "...", "confidence": 0.85, "category": "config|capacity|image|network|dependency|other"},
-  "howToFix": {"precondition": "<bash script>", "apply": "<bash script>", "verify": "<bash script>", "rollback": "<bash script>"}
+  "howToFix": {"precondition": "<bash script>", "apply": "<bash script>", "verify": "<bash script>", "rollback": "<bash script>",
+               "applyAction": {"verb": "patch|create|delete", "apiVersion": "apps/v1", "resource": "deployments", "namespace": "...", "name": "...", "payload": {}}}
 }
 
 Hard rules for this block:
@@ -138,6 +148,17 @@ apply. Nothing else runs automatically.
   nothing to undo.
 - apply and rollback never delete a Namespace, a Node or a CustomResourceDefinition: each takes
   everything under it along.
+- APPLY ACTION. When apply is exactly ONE Kubernetes write, also give that write as "applyAction"
+  (a JSON object, not a script): the portal's Apply button sends it as the person who clicks, with
+  their permissions. It makes the same change apply makes. "verb" is "patch" (payload is a JSON
+  merge patch), "create" (payload is the whole new object: apiVersion, kind, metadata.name) or
+  "delete" (no payload). "apiVersion" is "v1" or "<group>/<version>", "resource" the lowercase
+  plural (deployments, alerts), "namespace" empty for a cluster-scoped object, "name" the target
+  (for create, the new object's name). A merge patch replaces every list it touches, so a patch
+  that changes a list gives the whole list as you read it this run, with the change made; when
+  that list is containers or anything else keyed by name, leave applyAction out. Leave it out, too,
+  when apply reads state first, makes more than one write, runs anything but kubectl, or holds only
+  comments: the human then runs the script.
 - Every script starts with `#!/usr/bin/env bash` and a comment line saying what it tests or changes.
 
 Example: payments-api is OOMKilled at a 128Mi memory limit.
@@ -168,6 +189,20 @@ Example: payments-api is OOMKilled at a 128Mi memory limit.
     # Undo apply: put payments-api's memory limit back to 128Mi, the value read before the fix.
     set -euo pipefail
     kubectl set resources deployment payments-api -n payments -c payments-api --limits=memory=128Mi
+  applyAction: none. The limit sits in the containers list, and a merge patch would replace it.
+
+Example: deployment web in shop cannot pull its private image; it has no imagePullSecrets, and
+the Secret regcred exists in shop. Its precondition, verify and rollback follow the first
+example's pattern; apply is one write, so it has an applyAction.
+  apply:
+    #!/usr/bin/env bash
+    # Give web the regcred pull secret, so it can pull its private image.
+    set -euo pipefail
+    kubectl patch deployment web -n shop --type merge \\
+      -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"regcred"}]}}}}'
+  applyAction:
+    {"verb": "patch", "apiVersion": "apps/v1", "resource": "deployments", "namespace": "shop",
+     "name": "web", "payload": {"spec": {"template": {"spec": {"imagePullSecrets": [{"name": "regcred"}]}}}}}
 
 ALERT QUERY FALSE-POSITIVES: when the rows an Alert counts are written by the telemetry pipeline
 itself (a component that evaluates, stores or analyzes the alert logs text matching the alert's
@@ -356,16 +391,58 @@ def _script(v):
     return v + "\n", None
 
 
-def _how_to_fix(v):
-    """(howToFix, problems, rollback_problem). howToFix holds all three HOW_TO_FIX_SCRIPTS or is
-    None: the controller needs precondition and verify to move the incident, and the human needs
-    apply, so a partial set is dropped whole and the rest of the report is kept. Rollback is kept
-    when usable and otherwise left out alone, since the fix works without it; rollback_problem says
-    why it was left out. Other keys are dropped."""
-    if v is None:
-        return None, ["none returned"], None
+def _apply_action(v):
+    """(applyAction, None), (None, None) when there is none, or (None, why it is unusable)."""
+    if v is None or v == {}:
+        return None, None
     if not isinstance(v, dict):
-        return None, ["not an object"], None
+        return None, "not an object"
+    verb = v.get("verb")
+    if verb not in ACTION_VERBS:
+        return None, f"verb {verb!r} is not one of {', '.join(ACTION_VERBS)}"
+    out = {"verb": verb}
+    for k, pattern, limit in (("apiVersion", _API_VERSION_RE, 128), ("resource", _RESOURCE_RE, 63),
+                              ("name", _NAME_RE, 253)):
+        val = v.get(k)
+        if not isinstance(val, str) or len(val) > limit or not pattern.match(val):
+            return None, f"bad {k}"
+        out[k] = val
+    ns = v.get("namespace")
+    if ns not in (None, ""):
+        if not isinstance(ns, str) or len(ns) > 63 or not _RESOURCE_RE.match(ns):
+            return None, "bad namespace"
+        out["namespace"] = ns
+    payload = v.get("payload")
+    if verb == "delete":
+        if out["resource"] in ACTION_NEVER_DELETE:
+            return None, f"it deletes {out['resource']}"
+        if payload not in (None, {}):
+            return None, "a delete takes no payload"
+        return out, None
+    if not isinstance(payload, dict) or not payload:
+        return None, "no payload"
+    if len(json.dumps(payload)) > SCRIPT_MAX_CHARS:
+        return None, f"payload over {SCRIPT_MAX_CHARS} characters"
+    if verb == "create":
+        meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        if payload.get("apiVersion") != out["apiVersion"] or not isinstance(payload.get("kind"), str) \
+                or meta.get("name") != out["name"] \
+                or meta.get("namespace", out.get("namespace")) != out.get("namespace"):
+            return None, "the payload's apiVersion, kind or metadata does not match the target"
+    out["payload"] = payload
+    return out, None
+
+
+def _how_to_fix(v):
+    """(howToFix, problems, notes). howToFix holds all three HOW_TO_FIX_SCRIPTS or is None: the
+    controller needs precondition and verify to move the incident, and the human needs apply, so a
+    partial set is dropped whole and the rest of the report is kept. Rollback and applyAction are
+    each kept when usable and otherwise left out alone, since the fix works without them; notes
+    holds the missingContext line for each one left out. Other keys are dropped."""
+    if v is None:
+        return None, ["none returned"], []
+    if not isinstance(v, dict):
+        return None, ["not an object"], []
     out, problems = {}, []
     for k in HOW_TO_FIX_SCRIPTS:
         script, why = _script(v.get(k))
@@ -374,12 +451,24 @@ def _how_to_fix(v):
         else:
             out[k] = script
     if problems:
-        return None, problems, None
+        return None, problems, []
+    notes = []
     rollback, why = _script(v.get(HOW_TO_FIX_ROLLBACK))
     if why:
-        return out, [], why
-    out[HOW_TO_FIX_ROLLBACK] = rollback
-    return out, [], None
+        notes.append(_no_rollback_note(why))
+    else:
+        out[HOW_TO_FIX_ROLLBACK] = rollback
+    action, why = _apply_action(v.get(HOW_TO_FIX_ACTION))
+    if why:
+        notes.append(_no_action_note(why))
+    elif action:
+        out[HOW_TO_FIX_ACTION] = action
+    return out, [], notes
+
+
+def _no_action_note(why):
+    """The missingContext line for an applyAction that was left out."""
+    return f"No usable applyAction ({why}): the portal offers no Apply button, so run the apply script."
 
 
 def _no_fix_note(problems):
@@ -715,7 +804,7 @@ def parse_structured_report(text, tool_ledger=None):
     try:
         for match, data in _candidate_blocks(text):
             sources = _sources(data.get("sources"))
-            how_to_fix, fix_problems, rollback_problem = _how_to_fix(data.get("howToFix"))
+            how_to_fix, fix_problems, fix_notes = _how_to_fix(data.get("howToFix"))
             v2 = {
                 "analyzedResources": _obj_list(data.get("analyzedResources"),
                                                ("gvr", "name", "namespace", "whatWasRead")),
@@ -748,9 +837,9 @@ def parse_structured_report(text, tool_ledger=None):
             if fix_problems and v2.get("rootCause"):
                 v2["missingContext"] = (v2.get("missingContext") or [])[:63] + \
                     [_no_fix_note(fix_problems)]
-            elif rollback_problem:
-                v2["missingContext"] = (v2.get("missingContext") or [])[:63] + \
-                    [_no_rollback_note(rollback_problem)]
+            elif fix_notes:
+                v2["missingContext"] = (v2.get("missingContext") or [])[:64 - len(fix_notes)] + \
+                    fix_notes
             return prose, v2
     except Exception:  # noqa: BLE001 — the structured block is best-effort, never fatal
         pass

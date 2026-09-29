@@ -39,5 +39,19 @@ most 16384 characters (a list of lines is joined). Otherwise it drops `howToFix`
 rest of the report and, when there is a root cause, appends to `missingContext` why there are no
 scripts. A rollback that fails the same test is left out alone, and `missingContext` says so.
 
+`howToFix.applyAction` is optional: apply as one Kubernetes API write, when it is one. The portal's
+Apply button sends it as the person who clicks, with their RBAC, then sets `spec.applied`.
+
+| Field | Value |
+|---|---|
+| `verb` | `patch` (payload is a JSON merge patch), `create` (payload is the whole object) or `delete` (no payload) |
+| `apiVersion`, `resource` | the target's `v1` or `<group>/<version>`, and its lowercase plural |
+| `namespace`, `name` | the target; `namespace` is absent for a cluster-scoped object |
+| `payload` | an object; for `create` its apiVersion and metadata match the target |
+
+The parser keeps it only alongside the three scripts. One that is malformed, deletes a Namespace,
+Node or CustomResourceDefinition, or carries a payload over 16384 characters is left out alone,
+and `missingContext` says so.
+
 `TroubleshootingReport` has no `howToFix` field, so the apiserver prunes it; the `Incident` CRD
 (incident-controller) stores it. The handler does not write `status.remediationPlan`.
