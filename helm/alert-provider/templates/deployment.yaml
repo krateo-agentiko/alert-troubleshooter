@@ -11,6 +11,10 @@ kind: ServiceAccount
 metadata:
   name: krateo-alert-provider
   namespace: krateo-system
+{{- with .Values.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

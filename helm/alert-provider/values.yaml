@@ -3,6 +3,10 @@
 image:
   repository: ghcr.io/krateo-platformops/alert-provider
   tag: ""
+# Pull credentials for the image, on the krateo-alert-provider ServiceAccount (so the Deployment
+# and the hyperdx-key-bootstrap Job both use them). The image is private: the Krateo installer wires
+# this from registryAuth. e.g. [{name: krateo-registry-image-pull}]
+imagePullSecrets: []
 
 config:
   # A2A endpoint of the agent the webhook calls for root-cause analysis. Default = incident-agent

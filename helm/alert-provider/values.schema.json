@@ -66,6 +66,20 @@
         }
       }
     },
+    "imagePullSecrets": {
+      "type": "array",
+      "title": "Image pull secrets",
+      "description": "Pull credentials for the private image, set on the krateo-alert-provider ServiceAccount (the Deployment and the hyperdx-key-bootstrap Job). The Krateo installer wires it from registryAuth.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "config": {
       "type": "object",
       "additionalProperties": false,
@@ -120,7 +134,8 @@
                 "type": "string"
               },
               "threshold": {
-                "type": "number"
+                "type": "integer",
+                "description": "A row count. Typed integer, not number: crdgen types number as a string in the generated CRD."
               },
               "thresholdType": {
                 "type": "string"
