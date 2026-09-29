@@ -185,6 +185,17 @@ class TestOpeningPolicy(WriterCase):
                 self.assertEqual(self.k8s.only()["status"]["firings"], 4)
         self.assertEqual((self.compared, self.rca), ([], []))
 
+    def test_a_failed_RCA_with_error_prose_takes_the_firing_uncompared(self):
+        """A failed RCA can leave the agent's error text in `report`; it is still no analysis."""
+        self.k8s.put(NS, f"{ALERT}-x", ALERT, state="Open", firings=3)
+        self.k8s.write_status(NS, f"{ALERT}-x", {
+            "report": "LLM error: 429 Too Many Requests",
+            "error": "The analysis returned no structured block, so the incident has no scripts "
+                     "to check or fix it."})
+        self.fire()
+        self.assertEqual(self.k8s.only()["status"]["firings"], 4)
+        self.assertEqual((self.compared, self.rca), ([], []))
+
     def test_an_equal_analyzed_incident_takes_the_firing_before_an_analyzing_one(self):
         self.analyzed(f"{ALERT}-x", created="2026-09-25T09:00:00Z")
         self.k8s.put(NS, f"{ALERT}-y", ALERT, state="Analyzing", created="2026-09-25T10:00:00Z")
@@ -379,6 +390,30 @@ class TestResolvedGrace(WriterCase):
 
 
 class TestAnalysisOutcome(WriterCase):
+    def test_at_most_MAX_CONCURRENT_ANALYSES_RCAs_run_at_once(self):
+        import threading
+        import time
+        running, peak, lock = [0], [0], threading.Lock()
+
+        def rca(prompt, context_id=None):
+            with lock:
+                running[0] += 1
+                peak[0] = max(peak[0], running[0])
+            time.sleep(0.05)
+            with lock:
+                running[0] -= 1
+            return answer(), []
+        handler.a2a_analyze = rca
+        threads = [threading.Thread(target=handler.run_analysis, args=(NS, f"{ALERT}-{i}", "p"))
+                   for i in range(5)]
+        for i in range(5):
+            self.k8s.put(NS, f"{ALERT}-{i}", ALERT, state="Analyzing")
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(peak[0], handler.MAX_CONCURRENT_ANALYSES)
+
     def test_a_failed_RCA_opens_the_incident_with_the_error(self):
         self.answer = RuntimeError("A2A timed out")
         self.fire()

@@ -44,6 +44,17 @@ class TestComparable(unittest.TestCase):
         self.assertFalse(compare.comparable(incident(error="The analysis failed: 429")))
         self.assertFalse(compare.comparable(incident(report="  ", rootCause={})))
 
+    def test_a_failed_analysis_with_error_prose_is_not(self):
+        failed = incident(report="LLM error: 429 Too Many Requests",
+                          error="The analysis returned no structured block, so the incident has "
+                                "no scripts to check or fix it.")
+        self.assertFalse(compare.comparable(failed))
+
+    def test_a_root_cause_without_usable_scripts_is(self):
+        self.assertTrue(compare.comparable(incident(
+            rootCause={"statement": "payments-api is OOMKilled"}, report="## Root cause",
+            error="The analysis returned no usable howToFix, so the incident has no scripts.")))
+
 
 class TestPrompt(unittest.TestCase):
     def test_it_carries_the_alert_and_incident_A(self):

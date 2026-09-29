@@ -25,12 +25,15 @@ class NoVerdict(Exception):
 
 
 def comparable(incident):
-    """Whether an open incident has an analysis to compare a firing with: a root cause or a
-    report. An incident still Analyzing, or whose analysis failed, has neither."""
+    """Whether an open incident has an analysis to compare a firing with: a root cause, or a report
+    from an analysis that did not fail. An incident still Analyzing has neither, and a failed one
+    (`error` set, no root cause) holds at most the failure's text in `report`."""
     st = incident.get("status") or {}
     if st.get("state") == "Analyzing":
         return False
-    return bool((st.get("rootCause") or {}).get("statement") or (st.get("report") or "").strip())
+    if (st.get("rootCause") or {}).get("statement"):
+        return True
+    return not st.get("error") and bool((st.get("report") or "").strip())
 
 
 def _cut(text, limit):

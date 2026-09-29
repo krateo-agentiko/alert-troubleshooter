@@ -30,6 +30,10 @@ APISERVER = os.environ.get("APISERVER", "https://kubernetes.default.svc")
 SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 GROUP, VERSION = "observability.krateo.io", "v1alpha1"
 A2A_TIMEOUT = int(os.environ.get("A2A_TIMEOUT", "180"))
+# RCAs that run at once. One RCA reads up to ~1M input tokens a minute, so alerts that fire together
+# (a startup, one fault behind several alerts) would otherwise exhaust the model's per-minute quota
+# and fail every RCA at once. A new incident waits, Analyzing, for a free slot.
+MAX_CONCURRENT_ANALYSES = max(1, int(os.environ.get("MAX_CONCURRENT_ANALYSES", "2")))
 # The agent that judges whether a firing is the problem an open incident describes (compare.py).
 COMPARE_A2A = os.environ.get("COMPARE_A2A_URL", "http://autopilot.krateo-system.svc:8080/")
 COMPARE_TIMEOUT = int(os.environ.get("COMPARE_TIMEOUT", "120"))
@@ -65,6 +69,7 @@ AUTHN_TOKEN_FILE = os.environ.get("AUTHN_TOKEN_FILE", "/var/run/secrets/authn/to
 
 _firing = set()                  # (namespace, alert) pairs with an evaluation in progress
 _firing_lock = threading.Lock()
+_analysis_slots = threading.BoundedSemaphore(MAX_CONCURRENT_ANALYSES)
 _jwt_cache = {"token": "", "exp": 0.0}
 _jwt_lock = threading.Lock()  # serialize the token exchange so concurrent fires reuse one JWT
 
@@ -531,7 +536,8 @@ def run_analysis(ns, name, prompt):
     unstructured, or its scripts were unusable. It is cleared when howToFix is written."""
     status = {}
     try:
-        raw, tool_ledger = a2a_analyze(prompt, _context_id(name))
+        with _analysis_slots:
+            raw, tool_ledger = a2a_analyze(prompt, _context_id(name))
         print(f"[a2a] {ns}/{name}: {len(raw)} chars, {len(tool_ledger)} tool results", flush=True)
         prose, v2 = report_v2.parse_structured_report(raw, tool_ledger)
         if prose.strip():

@@ -42,14 +42,15 @@ An alert has an incident per problem, and several may be open at once; an incide
 state but `Resolved` and `Closed`. For each firing, `handler.fire`:
 
 1. lists the Incidents in the Alert's namespace labelled with the Alert's name;
-2. asks the comparison agent about each open incident that has an analysis (a root cause or a
-   report), newest first, whether it and the incident this firing would open are the same (see
+2. asks the comparison agent about each open incident that has an analysis (a root cause, or a
+   report from an RCA that did not fail), newest first, whether it and the incident this firing would open are the same (see
    [Incident comparison](#incident-comparison)). The first one judged equal takes the firing: one
    more `status.firings`, a new `status.lastFiredAt`, no RCA. The incident controller writes the
    same status, so the write is conditioned on the resourceVersion it read and retried on a
    conflict;
 3. else counts the firing on the newest open incident without an analysis (still `Analyzing`, or
-   its RCA failed): there is nothing to compare with, and a new incident would rerun the analysis;
+   its RCA failed, whatever text the failure left in `status.report`): there is nothing to compare
+   with, and a new incident would rerun the analysis;
 4. else, if the alert's latest incident is `Resolved` and its `status.resolution.at` is less than
    one `spec.interval` ago (5m when unset), counts the firing on that incident the same way, and it
    stays `Resolved`. A `where` alert keeps counting the rows from before the fix for its lookback
@@ -66,6 +67,9 @@ state but `Resolved` and `Closed`. For each firing, `handler.fire`:
 - One evaluation per alert runs at a time: while one is still comparing, the alert's next firing
   is skipped. The RCA runs after that evaluation ends, and its incident takes the firings that
   arrive meanwhile (step 3).
+- At most `MAX_CONCURRENT_ANALYSES` RCAs (2) run at once, so alerts that fire together do not
+  spend the model's per-minute token quota at once and fail every RCA; a new incident waits in
+  `Analyzing` for a slot.
 - An RCA that fails, or whose answer is empty, unstructured or has no usable `howToFix`, still
   opens the incident, with `status.error` saying why it has no scripts.
 - An incident a human closed while it was analyzing stays `Closed`, which is final: the analysis
