@@ -29,6 +29,7 @@ import time
 
 import requests
 
+import compare
 import handler
 import hyperdx_v2
 from handler import _k8s, _now  # reuse the apiserver helpers
@@ -332,10 +333,12 @@ def _release_shared(hdx, crs):
                   flush=True)
 
 
-def _start_firing(cr):
+def _start_firing(hdx, source, cr):
     """A firing, off the reconcile thread: a comparison takes seconds, a new incident's RCA
-    minutes."""
-    threading.Thread(target=handler.fire, args=(cr,), daemon=True).start()
+    minutes. Its records are the alert's `where` rows in `source`, one line per distinct record."""
+    def records(where, seconds):
+        return hdx.record_counts(source["id"], where, seconds, compare.ROW_GROUP)
+    threading.Thread(target=handler.fire, args=(cr, records), daemon=True).start()
 
 
 def reconcile_once(hdx):
@@ -368,7 +371,7 @@ def reconcile_once(hdx):
                 continue
             _ensure_finalizer(cr)       # guard the CR so its HyperDX resources are cleaned on delete
             if _reconcile_cr(hdx, cr, source, webhook_id) == "ALERT":
-                _start_firing(cr)
+                _start_firing(hdx, source, cr)
         except requests.HTTPError:
             raise  # bubble 401/session issues to the loop for re-login
         except Exception as e:  # noqa: BLE001 — one bad CR shouldn't stall the rest

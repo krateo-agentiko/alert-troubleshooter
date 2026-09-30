@@ -13,12 +13,11 @@ config:
   # (has the k8s/Helm/ClickHouse read tools an RCA needs; autopilot has neither). In-cluster kagent
   # A2A Service, named after the Agent's metadata.name -> incident-agent.<namespace>.svc:8080.
   autopilotA2aUrl: http://incident-agent.krateo-system.svc:8080/
-  # A2A endpoint of the agent that judges whether a firing alert's current problem is the one an
-  # open incident of that alert describes (compare.py); a firing no open incident covers opens a
-  # new incident. Default = the autopilot agent's in-cluster kagent A2A Service. Behind the
-  # agentgateway, use its /api/a2a/<namespace>/autopilot path, so agentgateway-policies'
-  # incident-compare rate limit bounds these calls.
-  compareA2aUrl: http://autopilot.krateo-system.svc:8080/
+  # kagent ModelConfig, in the release namespace, whose model judges which open incident of a
+  # firing alert covers the alert's current records (compare.py): one chat-completions call per
+  # firing, no agent. Provider OpenAI (its baseUrl; with apiKeyPassthrough the key is the service
+  # JWT) or Gemini. A firing no open incident covers opens a new incident.
+  compareModelConfig: gemini-flash
   # Intra-service auth (Option A). Base URL of the authn service. When set, the handler exchanges its
   # projected SA token (audience "authn") at <authnUrl>/serviceaccount/login for a Krateo JWT and
   # presents it on the A2A calls (the RCA and the comparisons), so the gated agents accept them; a

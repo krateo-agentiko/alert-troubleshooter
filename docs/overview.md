@@ -2,7 +2,7 @@
 type: Architecture
 title: alert-provider — architecture
 description: How a firing alert becomes Incidents, one per problem, each with an incident-agent root-cause analysis.
-tags: [observability, alerts, autopilot]
+tags: [observability, alerts]
 timestamp: 2026-08-20T00:00:00Z
 ---
 
@@ -12,7 +12,8 @@ A controller (not an agent). The reconciler mirrors each `Alert`'s HyperDX state
 60 s (`config.reconcileInterval`), and each pass that finds it ALERT is one firing. A firing is
 recorded on an `Incident` (`observability.krateo.io/v1alpha1`, the CRD incident-controller ships):
 an open incident of the same problem counts it, or a new incident opens and **incident-agent**
-root-causes it over A2A. The **autopilot** agent judges whether two incidents are the same. Firings
+root-causes it over A2A. One LLM call per firing, on the fleet's model, names the open incident it
+belongs to. Firings
 and analyses run off the reconcile thread. HyperDX's webhook (`POST /webhook`) is acked 202 and
 only logged: a HyperDX alert needs a channel, and the reconciler already fires it.
 
@@ -42,9 +43,9 @@ An alert has an incident per problem, and several may be open at once; an incide
 state but `Resolved` and `Closed`. For each firing, `handler.fire`:
 
 1. lists the Incidents in the Alert's namespace labelled with the Alert's name;
-2. asks the comparison agent about each open incident that has an analysis (a root cause, or a
-   report from an RCA that did not fail), newest first, whether it and the incident this firing would open are the same (see
-   [Incident comparison](#incident-comparison)). The first one judged equal takes the firing: one
+2. asks the comparison model, in one call over the open incidents that have an analysis (a root
+   cause, or a report from an RCA that did not fail), which one causes the alert's current
+   records (see [Incident comparison](#incident-comparison)). That one takes the firing: one
    more `status.firings`, a new `status.lastFiredAt`, no RCA. The incident controller writes the
    same status, so the write is conditioned on the resourceVersion it read and retried on a
    conflict;
@@ -56,7 +57,7 @@ state but `Resolved` and `Closed`. For each firing, `handler.fire`:
    stays `Resolved`. A `where` alert keeps counting the rows from before the fix for its lookback
    window, and those firings belong to the incident the fix resolved. A `Closed` incident gets no
    such window: after a human close, the next firing opens a new one;
-5. else, when a comparison gave no verdict, records nothing: whether the firing is a new problem
+5. else, when the comparison gave no verdict, records nothing: whether the firing is a new problem
    is unknown, and the next pass asks again;
 6. otherwise creates `<alert>-<yyyymmdd-hhmmss>` (the firing's UTC time) with the label and
    `spec.alertRef`, `trigger: alert`, `prompt` and `triggeredAt`, in state `Analyzing` with
@@ -83,16 +84,23 @@ state but `Resolved` and `Closed`. For each firing, `handler.fire`:
 
 `compare.py` holds both sides of it: the prompt and the verdict parser.
 
-- One A2A call per compared incident, to `config.compareA2aUrl` (default: the autopilot agent), on
-  a fresh kagent thread, with the service JWT and the header `X-Krateo-Purpose: incident-compare`.
-  It times out after `COMPARE_TIMEOUT` (120 s).
-- The prompt describes incident A, the open one: its root cause, the objects its analysis read,
-  its evidence, its latest precondition exit and the start of its report. Incident B is the one
-  this firing would open. A and B are the same when one root cause on one object explains both.
-  The agent may read the alert's current rows and the objects A names, and is told to change
-  nothing.
-- The answer ends with `{"equal": true|false, "reason": "…"}`. A failed or timed-out call, a 429,
-  or an answer without that block is no verdict.
+- One chat completion per firing, with no agent and no tools, on the model of the kagent
+  ModelConfig `config.compareModelConfig` (default `gemini-flash`): provider OpenAI at its
+  `baseUrl` (behind the agentgateway, its `/llm/v1` route, keyed by the service JWT under
+  `apiKeyPassthrough`), or provider Gemini with its `apiKeySecret`. It times out after
+  `COMPARE_TIMEOUT` (60 s).
+- The system prompt is two sentences. The user message holds the alert, its current records and
+  the 10 newest open analyzed incidents, newest first, each as its root cause and its
+  precondition, apply and verify scripts.
+- The records are the alert's `where` rows over one `spec.interval`, from HyperDX's
+  `/api/v2/charts/series` grouped by `compare.ROW_GROUP`: a line per distinct record (a k8s
+  event's object, reason and message; any other log's service and pod), with its
+  count, the 20 most frequent quoted.
+- The answer is `{"match": <incident number> | null, "reason": "…"}`: the newest incident whose
+  root cause produces any of the records, or null for none. The prompt numbers the incidents
+  rather than naming them, because the gateway's PhoneNumber guard masks the timestamp in a name.
+  A failed or timed-out call, a 429, or an answer whose `match` is not null or a candidate's
+  number is no verdict.
 - Behind the agentgateway, agentgateway-policies routes requests carrying the header to its
   `incidentCompare` route, whose rate limit bounds these calls. Its 429 is no verdict, so the
   limit delays a new incident and never opens an extra one.

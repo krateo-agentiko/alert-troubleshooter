@@ -34,12 +34,12 @@ A2A_TIMEOUT = int(os.environ.get("A2A_TIMEOUT", "180"))
 # (a startup, one fault behind several alerts) would otherwise exhaust the model's per-minute quota
 # and fail every RCA at once. A new incident waits, Analyzing, for a free slot.
 MAX_CONCURRENT_ANALYSES = max(1, int(os.environ.get("MAX_CONCURRENT_ANALYSES", "2")))
-# The agent that judges whether a firing is the problem an open incident describes (compare.py).
-COMPARE_A2A = os.environ.get("COMPARE_A2A_URL", "http://autopilot.krateo-system.svc:8080/")
-COMPARE_TIMEOUT = int(os.environ.get("COMPARE_TIMEOUT", "120"))
-# Sent on every comparison call. agentgateway-policies routes requests carrying it to its
-# incident-compare route, whose rate limit bounds these calls (a 429 is no verdict).
-COMPARE_HEADERS = {"X-Krateo-Purpose": "incident-compare"}
+# The kagent ModelConfig, in NAMESPACE, whose model judges which open incident covers a firing
+# (compare.py). One chat-completions call per firing, with no agent and no tools.
+COMPARE_MODEL_CONFIG = os.environ.get("COMPARE_MODEL_CONFIG", "gemini-flash")
+COMPARE_TIMEOUT = int(os.environ.get("COMPARE_TIMEOUT", "60"))
+# Gemini's OpenAI-compatible endpoint, for a ModelConfig of provider Gemini.
+GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
 # The Incident contract (incident-controller apis/incident/v1alpha1).
 LABEL_ALERT = "observability.krateo.io/alert"  # value: the Alert's metadata.name, so at most 63 chars
@@ -171,37 +171,43 @@ def _alert_incidents(ns, alert_ref):
     return _k8s("GET", f"{_incidents(ns)}?labelSelector={selector}").get("items") or []
 
 
-def _pick(alert, items, at, grace):
+def _pick(alert, items, at, grace, rows):
     """The incident a firing at `at` counts on, or None to open a new one.
 
     In order:
-      1. the first open incident (any state but Resolved and Closed) with an analysis that the
-         comparison agent judges the same problem, newest first;
+      1. the open incident (any state but Resolved and Closed) with an analysis that one LLM call
+         names as the cause of the alert's current records, among the newest
+         compare.MAX_CANDIDATES;
       2. the newest open incident without an analysis (Analyzing, or its RCA failed): there is
          nothing to compare with, and a new incident would rerun the analysis;
       3. the alert's latest incident when it is Resolved less than `grace` seconds (one
          spec.interval) ago: a `where` alert keeps counting rows from before the fix for its
          lookback window, and those belong to the incident the fix resolved. A Closed incident
          never takes a firing.
-    Raises compare.NoVerdict when a comparison gave no verdict and nothing above covers the
-    firing: whether it is a new problem is then unknown, so nothing opens."""
+    `rows` returns the alert's current (record, count) pairs; it is called only when there is an
+    incident to compare with. Raises compare.NoVerdict when the comparison gave no verdict and
+    nothing above covers the firing: whether it is a new problem is then unknown, so nothing
+    opens."""
     ns, alert_ref = alert["metadata"].get("namespace") or NAMESPACE, alert["metadata"]["name"]
     open_ = sorted((i for i in items if (i.get("status") or {}).get("state") not in ENDED),
                    key=lambda i: (i["metadata"].get("creationTimestamp", ""), i["metadata"]["name"]),
                    reverse=True)
     failed = None
-    for incident in (i for i in open_ if compare.comparable(i)):
-        name = incident["metadata"]["name"]
+    candidates = [i for i in open_ if compare.comparable(i)][:compare.MAX_CANDIDATES]
+    if candidates:
+        by_name = {i["metadata"]["name"]: i for i in candidates}
         try:
-            equal, reason = a2a_compare(compare.build_prompt(alert, incident, at.isoformat()))
+            match, reason = llm_compare(compare.build_prompt(alert, candidates, rows()),
+                                        list(by_name))
         except compare.NoVerdict as e:
-            print(f"[compare] {ns}/{alert_ref} vs {name}: no verdict ({e})", flush=True)
+            print(f"[compare] {ns}/{alert_ref} vs {len(candidates)} incidents: no verdict ({e})",
+                  flush=True)
             failed = e
-            continue
-        print(f"[compare] {ns}/{alert_ref} vs {name}: {'equal' if equal else 'different'} "
-              f"({reason})", flush=True)
-        if equal:
-            return incident
+        else:
+            print(f"[compare] {ns}/{alert_ref} vs {len(candidates)} incidents: "
+                  f"{match or 'none'} ({reason})", flush=True)
+            if match:
+                return by_name[match]
     unanalyzed = [i for i in open_ if not compare.comparable(i)]
     if unanalyzed:
         return unanalyzed[0]
@@ -238,13 +244,13 @@ def _count_on(ns, name, now):
     raise RuntimeError(f"incident {ns}/{name}: no firing write succeeded in {WRITE_ATTEMPTS} attempts")
 
 
-def _open_or_count(ns, alert, prompt, at, grace):
+def _open_or_count(ns, alert, prompt, at, grace, rows):
     """One firing: count it on the incident _pick chooses, or create one.
 
     Returns the new Incident, or None when the firing was counted on an existing one."""
     alert_ref = alert["metadata"]["name"]
     now = at.isoformat()
-    target = _pick(alert, _alert_incidents(ns, alert_ref), at, grace)
+    target = _pick(alert, _alert_incidents(ns, alert_ref), at, grace, rows)
     if target is not None:
         _count_on(ns, target["metadata"]["name"], now)
         return None
@@ -384,20 +390,52 @@ def a2a_analyze(prompt, context_id=None):
     return _a2a(AUTOPILOT_A2A, prompt, context_id=context_id, timeout=A2A_TIMEOUT)
 
 
-def a2a_compare(prompt):
-    """(equal, reason) from the comparison agent (COMPARE_A2A_URL, autopilot).
+def _chat_endpoint():
+    """(url, model, key) of the chat-completions endpoint the COMPARE_MODEL_CONFIG ModelConfig
+    names, as kagent resolves it: provider OpenAI at its baseUrl (with apiKeyPassthrough, the key is
+    the caller's JWT, here the service JWT), or provider Gemini at its OpenAI-compatible endpoint.
+    The key comes from the ModelConfig's apiKeySecret otherwise."""
+    mc = _k8s("GET", f"/apis/kagent.dev/v1alpha2/namespaces/{NAMESPACE}/modelconfigs/"
+                     f"{COMPARE_MODEL_CONFIG}")
+    spec = mc.get("spec") or {}
+    provider = spec.get("provider")
+    if provider == "OpenAI":
+        url = (spec.get("openAI") or {}).get("baseUrl") or "https://api.openai.com/v1"
+    elif provider == "Gemini":
+        url = GEMINI_OPENAI_URL
+    else:
+        raise ValueError(f"ModelConfig {COMPARE_MODEL_CONFIG}: provider {provider} has no "
+                         "chat-completions endpoint here")
+    if spec.get("apiKeyPassthrough"):
+        key = _service_jwt()
+    elif spec.get("apiKeySecret"):
+        secret = _k8s("GET", f"/api/v1/namespaces/{NAMESPACE}/secrets/{spec['apiKeySecret']}")
+        key = base64.b64decode((secret.get("data") or {})[spec.get("apiKeySecretKey")]).decode()
+    else:
+        key = ""
+    return url.rstrip("/"), spec.get("model"), key
 
-    Each call is a fresh kagent thread, so a verdict rests on its prompt alone. Raises
-    compare.NoVerdict on any failure, a 429 from the gateway's incident-compare limit included."""
+
+def llm_compare(prompt, names):
+    """(name | None, reason) from one chat completion: compare.SYSTEM, then `prompt`.
+
+    Raises compare.NoVerdict on any failure, a 429 from the gateway's LLM rate limit included."""
     try:
-        text, _ = _a2a(COMPARE_A2A, prompt, timeout=COMPARE_TIMEOUT, headers=COMPARE_HEADERS)
+        url, model, key = _chat_endpoint()
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        r = requests.post(f"{url}/chat/completions", headers=headers, timeout=COMPARE_TIMEOUT,
+                          json={"model": model, "messages": [
+                              {"role": "system", "content": compare.SYSTEM},
+                              {"role": "user", "content": prompt}]})
+        r.raise_for_status()
+        text = r.json()["choices"][0]["message"]["content"]
     except requests.HTTPError as e:
         if _http_status(e) == 429:
             raise compare.NoVerdict("rate-limited") from e
         raise compare.NoVerdict(f"the call failed: {str(e)[:200]}") from e
-    except Exception as e:  # noqa: BLE001 — a timeout or a broken stream is no verdict either
+    except Exception as e:  # noqa: BLE001 — a timeout, a missing ModelConfig or a bad body alike
         raise compare.NoVerdict(f"the call failed: {str(e)[:200]}") from e
-    return compare.parse_verdict(text)
+    return compare.parse_verdict(text, names)
 
 
 def _a2a(url, prompt, context_id=None, timeout=A2A_TIMEOUT, headers=None):
@@ -488,13 +526,15 @@ def process(payload):
           flush=True)
 
 
-def fire(alert):
+def fire(alert, records=None):
     """One evaluation of a firing Alert CR, from the reconciler's pass (about every 60 s).
 
     The firing counts on the incident _pick chooses, or opens a new one whose RCA then runs in
     this call. `alert` is the CR: its metadata.name keys the incidents and their label, its
-    namespace holds them, spec.interval is the Resolved grace window. One evaluation per alert
-    runs at a time: while one is still comparing, the alert's next firing is skipped."""
+    namespace holds them, spec.interval is the Resolved grace window and the lookback of its
+    records. `records(where, seconds)` returns the (record, count) pairs the comparison reads. One
+    evaluation per alert runs at a time: while one is still comparing, the alert's next firing is
+    skipped."""
     meta, spec = alert.get("metadata") or {}, alert.get("spec") or {}
     alert_ref = meta.get("name", "")
     ns = meta.get("namespace") or NAMESPACE
@@ -512,9 +552,15 @@ def fire(alert):
     alert = {**alert, "metadata": {**meta, "namespace": ns}}
     prompt = build_prompt(spec.get("displayName") or alert_ref, "ALERT", spec.get("where"),
                           spec.get("message"))
+    grace = interval_seconds(spec.get("interval"))
+
+    def rows():
+        try:
+            return records(spec.get("where") or "", grace)
+        except Exception as e:  # noqa: BLE001 — without the records there is no comparison
+            raise compare.NoVerdict(f"the alert's records are unreadable: {str(e)[:200]}") from e
     try:
-        created = _open_or_count(ns, alert, prompt, datetime.now(timezone.utc),
-                                 interval_seconds(spec.get("interval")))
+        created = _open_or_count(ns, alert, prompt, datetime.now(timezone.utc), grace, rows)
     except compare.NoVerdict as e:
         print(f"[incident] alert {ns}/{alert_ref}: no comparison verdict ({e}); the next pass "
               "retries", flush=True)
@@ -595,5 +641,5 @@ if __name__ == "__main__":
         threading.Thread(target=reconciler.run_forever, daemon=True).start()
     port = int(os.environ.get("PORT", "8080"))
     print(f"krateo-alert-provider listening on :{port} → RCA {AUTOPILOT_A2A}, compare "
-          f"{COMPARE_A2A}", flush=True)
+          f"ModelConfig {NAMESPACE}/{COMPARE_MODEL_CONFIG}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()

@@ -19,8 +19,8 @@ HyperDX alert per CR, named after its `metadata.name`, and the shared webhook th
 `http://krateo-alert-provider.krateo-system.svc:8080/webhook`, which only acknowledges. Every
 pass (60 s) that finds a HyperDX alert ALERT is a firing of its CR. Each firing is recorded on an
 `Incident`, so incident-controller's CRD chart must be installed first; without it a firing is
-logged and lost. Comparing a firing with the alert's open incidents calls the autopilot agent
-(`config.compareA2aUrl`).
+logged and lost. Comparing a firing with the alert's open incidents is one call to the model of the kagent
+ModelConfig `config.compareModelConfig`.
 
 ## Who can see alerts
 

@@ -6,14 +6,14 @@ Identity: one Alert CR = one HyperDX alert named after its metadata.name; its in
 label observability.krateo.io/alert=<metadata.name>.
 Firing: each reconciler pass (60 s) that mirrors an Alert's HyperDX state as ALERT. The webhook
 only logs.
-Opening: autopilot (config.compareA2aUrl) compares the firing with each open analyzed incident,
-newest first; the first judged equal gets firings++. Else an open incident with no analysis
+Opening: one chat completion on config.compareModelConfig's model reads the alert's current
+records (HyperDX, grouped) and its 10 newest open analyzed incidents (root cause + howToFix
+scripts) and names the one that causes them; it gets firings++. Else an open incident with no analysis
 (Analyzing, or its RCA failed) gets it; else a Resolved incident within one spec.interval of
 resolution.at (grace; never after Closed); else, if a comparison gave no verdict (failed, 429,
-no {"equal": bool} block), nothing; else a new <alert>-<yyyymmdd-hhmmss> opens (Analyzing -> RCA
+no {"match": number|null} object), nothing; else a new <alert>-<yyyymmdd-hhmmss> opens (Analyzing -> RCA
 -> Open, error set when it has no howToFix).
-compare.py: the comparison prompt + verdict parser; header X-Krateo-Purpose: incident-compare,
-which agentgateway-policies' incidentCompare route rate-limits.
+compare.py: the comparison's system prompt, prompt, record grouping + verdict parser.
 
 docs/overview.md: architecture
 docs/usage.md: install + wire the webhook

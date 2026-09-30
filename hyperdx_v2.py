@@ -11,6 +11,8 @@ API shape notes:
   * Dashboard tile config v2 shape: {sourceId, select: [{aggFn, where}], displayType, ...}
     (NOT the legacy {source, select: "count()", whereLanguage, from, granularity, ...}).
 """
+import time
+
 import requests
 
 # A generic webhook body can use only {{title}}, {{body}}, {{link}}, {{state}}, {{startTime}},
@@ -18,6 +20,12 @@ import requests
 # HyperDX alert name, which is its Alert CR's metadata.name. {{state}} is ALERT on a firing and OK
 # on a resolve. The handler only logs a notification: the reconciler's pass fires alerts.
 DEFAULT_WEBHOOK_BODY = '{"alertName":"{{title}}","state":"{{state}}","source":"hyperdx-alert"}'
+
+
+# charts/series bucket sizes, in seconds.
+GRANULARITIES = [("30s", 30), ("1m", 60), ("5m", 300), ("10m", 600), ("15m", 900), ("30m", 1800),
+                 ("1h", 3600), ("2h", 7200), ("6h", 21600), ("12h", 43200), ("1d", 86400),
+                 ("2d", 172800), ("7d", 604800), ("30d", 2592000)]
 
 
 class HyperDXError(RuntimeError):
@@ -59,6 +67,22 @@ class HyperDXV2:
         if not srcs:
             raise HyperDXError("no HyperDX sources configured")
         return srcs[0]
+
+    def record_counts(self, source_id, where, seconds, group_by):
+        """[(group, count)] of the records matching `where` (SQL) over the last `seconds`, grouped
+        by the `group_by` expression, the most frequent first. The buckets are the coarsest that
+        cover the window, so each group comes back in at most two."""
+        end = int(time.time() * 1000)
+        granularity = next((g for g, s in GRANULARITIES if s >= seconds), GRANULARITIES[-1][0])
+        buckets = self._req("POST", "/api/v2/charts/series", {
+            "startTime": end - seconds * 1000, "endTime": end, "granularity": granularity,
+            "series": [{"sourceId": source_id, "aggFn": "count", "where": where,
+                        "whereLanguage": "sql", "groupBy": [group_by]}]}) or []
+        counts = {}
+        for b in buckets:  # one per (time bucket, group)
+            group = (b.get("group") or [""])[0]
+            counts[group] = counts.get(group, 0) + int(float(b.get("series_0.data") or 0))
+        return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
 
     def ensure_webhook(self, name, target_url, service="generic", description="", body=None):
         """Ensure a generic webhook named `name` exists and sends `body`.

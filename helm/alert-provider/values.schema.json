@@ -90,11 +90,11 @@
           "description": "A2A endpoint of the agent the webhook calls for root-cause analysis. Defaults to the in-cluster kagent A2A Service `http://incident-agent.krateo-system.svc:8080/` (kagent names the Service after the Agent's metadata.name).",
           "default": "http://incident-agent.krateo-system.svc:8080/"
         },
-        "compareA2aUrl": {
+        "compareModelConfig": {
           "type": "string",
-          "title": "Comparison agent A2A URL",
-          "description": "A2A endpoint of the agent that judges whether a firing alert's current problem is the one an open incident of that alert describes; a firing that no open incident covers opens a new incident. Defaults to the in-cluster kagent A2A Service of the autopilot agent, `http://autopilot.krateo-system.svc:8080/`. Behind the agentgateway, point it at the gateway's `/api/a2a/<namespace>/autopilot` path so agentgateway-policies' incident-compare rate limit applies.",
-          "default": "http://autopilot.krateo-system.svc:8080/"
+          "title": "Comparison ModelConfig",
+          "description": "kagent ModelConfig, in the release namespace, whose model judges which open incident of a firing alert covers the alert's current records: one chat-completions call per firing, with no agent. Provider OpenAI (its baseUrl; with apiKeyPassthrough the key is the service JWT) or Gemini. A firing that no open incident covers opens a new incident.",
+          "default": "gemini-flash"
         },
         "authnUrl": {
           "type": "string",

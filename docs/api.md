@@ -18,11 +18,10 @@ pass fires alerts.
 
 ## Comparison contract
 
-`compare.py` holds both sides of it. Each call goes to `config.compareA2aUrl` over A2A
-(`message/stream`), on a fresh kagent thread, with the service JWT and the header
-`X-Krateo-Purpose: incident-compare`, which agentgateway-policies' `incidentCompare` route
-rate-limits. The answer ends with one block `{"equal": true|false, "reason": "<one sentence>"}`.
-Anything else, a failed call, or a 429 is no verdict. See
+`compare.py` holds both sides of it. Each firing is one OpenAI chat-completions call
+(`<baseUrl>/chat/completions`) on the model of the ModelConfig `config.compareModelConfig`, with
+`compare.SYSTEM` and the prompt. The answer is one object `{"match": <incident number> | null,
+"reason": "<one sentence>"}`, the number in prompt order. Anything else, a failed call, or a 429 is no verdict. See
 [overview](overview.md#incident-comparison).
 
 ## RCA output contract

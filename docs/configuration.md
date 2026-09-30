@@ -13,9 +13,9 @@ timestamp: 2026-08-20T00:00:00Z
 | `image.repository` | `ghcr.io/krateo-platformops/alert-provider` | controller image |
 | `image.tag` | chart appVersion | image tag; pin to override |
 | `config.autopilotA2aUrl` | `http://incident-agent.krateo-system.svc:8080/` | the RCA agent's A2A endpoint |
-| `config.compareA2aUrl` | `http://autopilot.krateo-system.svc:8080/` | the agent that judges whether a firing is an open incident's problem; behind the agentgateway, its `/api/a2a/<namespace>/autopilot` path, so the `incidentCompare` rate limit applies |
+| `config.compareModelConfig` | `gemini-flash` | the kagent ModelConfig whose model names the open incident that covers a firing; provider OpenAI or Gemini |
 | `config.authnUrl` | `""` | authn, for the service JWT on both A2A calls; empty = unauthenticated |
 | `config.reconcileInterval` | `60` | seconds between reconciler passes; each pass that finds an alert ALERT is one firing |
 
 Runtime env (set on the Deployment) carries these, plus `A2A_TIMEOUT` (180 s, the RCA) and
-`COMPARE_TIMEOUT` (120 s, one comparison). See `helm/alert-provider/templates/deployment.yaml`.
+`COMPARE_TIMEOUT` (60 s, one comparison). See `helm/alert-provider/templates/deployment.yaml`.

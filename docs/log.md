@@ -18,3 +18,6 @@ timestamp: 2026-08-20T00:00:00Z
 - `howToFix` gains an optional `applyAction`, the single Kubernetes write the portal's Apply button sends as the clicking user.
 - A failed RCA's error text in `status.report` no longer makes its incident comparable, so it takes the alert's firings uncompared instead of opening a new incident each pass. At most 2 RCAs run at once (`MAX_CONCURRENT_ANALYSES`).
 - The chart takes `imagePullSecrets` for its private image, set on the `krateo-alert-provider` ServiceAccount.
+
+## 2026-09-30
+- A firing is compared with all its alert's open incidents in one chat completion on the model of `config.compareModelConfig` (default `gemini-flash`), with a two-sentence system prompt, the alert's current records from HyperDX, and each incident's root cause and scripts. `config.compareA2aUrl` is gone.

@@ -1,6 +1,6 @@
 # krateo-alert-provider — the HyperDX-alert → Incident handler. Its reconciler mirrors each
-# Alert's HyperDX state every pass; a firing counts on the open incident the comparison agent
-# (config.compareA2aUrl, autopilot by default) judges the same problem, or opens an Incident CR
+# Alert's HyperDX state every pass; a firing counts on the open incident the comparison model
+# (config.compareModelConfig) names as its cause, or opens an Incident CR
 # (incident-controller's CRD) whose RCA the RCA agent (config.autopilotA2aUrl, incident-agent by
 # default) writes. HyperDX's webhook posts to
 # http://krateo-alert-provider.krateo-system.svc:8080/webhook, which only acknowledges. Image is
@@ -30,10 +30,15 @@ rules:
   - apiGroups: ["observability.krateo.io"]
     resources: ["alerts", "alerts/status"]
     verbs: ["get", "list", "watch", "create", "patch", "update"]
-  # the key-bootstrap Job (same SA) writes the hyperdx-api-token Secret
+  # the key-bootstrap Job (same SA) writes the hyperdx-api-token Secret; the comparison reads a
+  # ModelConfig's apiKeySecret
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create", "get", "patch", "update"]
+  # the comparison resolves its model from config.compareModelConfig
+  - apiGroups: ["kagent.dev"]
+    resources: ["modelconfigs"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -142,8 +147,8 @@ spec:
             - name: AUTOPILOT_A2A_URL
               value: {{ .Values.config.autopilotA2aUrl | quote }}
             # The agent that judges whether a firing is the problem an open incident describes.
-            - name: COMPARE_A2A_URL
-              value: {{ .Values.config.compareA2aUrl | quote }}
+            - name: COMPARE_MODEL_CONFIG
+              value: {{ .Values.config.compareModelConfig | quote }}
             # Intra-service auth (Option A): when set, the handler exchanges the projected SA token
             # (audience "authn", mounted below) at <authnUrl>/serviceaccount/login for a Krateo JWT and
             # presents it on the A2A calls (the RCA and the comparisons), so the gated agents accept them.

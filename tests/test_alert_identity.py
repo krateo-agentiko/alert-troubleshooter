@@ -128,7 +128,7 @@ class ReconcilerHarness:
         self.r._patch_status = self._patch_status
         self.r._patch_finalizers = lambda name, fins: None
         self.fired = []
-        self.r._start_firing = lambda cr: self.fired.append(cr["metadata"]["name"])
+        self.r._start_firing = lambda hdx, source, cr: self.fired.append(cr["metadata"]["name"])
 
     def _patch_status(self, name, status):
         st = self.crs[name].setdefault("status", {})
