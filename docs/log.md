@@ -21,3 +21,7 @@ timestamp: 2026-08-20T00:00:00Z
 
 ## 2026-09-30
 - A firing is compared with all its alert's open incidents in one chat completion on the model of `config.compareModelConfig` (default `gemini-flash`), with a two-sentence system prompt, the alert's current records from HyperDX, and each incident's root cause and scripts. `config.compareA2aUrl` is gone.
+
+## 2026-10-01
+- A comparison weighs the 50 newest open analyzed incidents, set by `config.maxCompareCandidates`.
+- An incident whose RCA failed takes its alert's firings for `config.failedAnalysisHold` (1800 s) after the failure, then no more: the next firing nothing else covers opens a new incident with a fresh RCA. An interrupted RCA stamps `completedAt` too.

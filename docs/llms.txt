@@ -7,9 +7,9 @@ label observability.krateo.io/alert=<metadata.name>.
 Firing: each reconciler pass (60 s) that mirrors an Alert's HyperDX state as ALERT. The webhook
 only logs.
 Opening: one chat completion on config.compareModelConfig's model reads the alert's current
-records (HyperDX, grouped) and its 10 newest open analyzed incidents (root cause + howToFix
+records (HyperDX, grouped) and its config.maxCompareCandidates (50) newest open analyzed incidents (root cause + howToFix
 scripts) and names the one that causes them; it gets firings++. Else an open incident with no analysis
-(Analyzing, or its RCA failed) gets it; else a Resolved incident within one spec.interval of
+(Analyzing, or its RCA failed less than config.failedAnalysisHold, 1800 s, ago) gets it; else a Resolved incident within one spec.interval of
 resolution.at (grace; never after Closed); else, if a comparison gave no verdict (failed, 429,
 no {"match": number|null} object), nothing; else a new <alert>-<yyyymmdd-hhmmss> opens (Analyzing -> RCA
 -> Open, error set when it has no howToFix).

@@ -37,6 +37,9 @@ MAX_CONCURRENT_ANALYSES = max(1, int(os.environ.get("MAX_CONCURRENT_ANALYSES", "
 # The kagent ModelConfig, in NAMESPACE, whose model judges which open incident covers a firing
 # (compare.py). One chat-completions call per firing, with no agent and no tools.
 COMPARE_MODEL_CONFIG = os.environ.get("COMPARE_MODEL_CONFIG", "gemini-flash")
+# Seconds an incident whose RCA failed keeps taking its alert's firings, from the failure
+# (status.completedAt). Past it, a firing nothing else covers opens a new incident and RCA.
+FAILED_ANALYSIS_HOLD = max(0, int(os.environ.get("FAILED_ANALYSIS_HOLD", "1800")))
 COMPARE_TIMEOUT = int(os.environ.get("COMPARE_TIMEOUT", "60"))
 # Gemini's OpenAI-compatible endpoint, for a ModelConfig of provider Gemini.
 GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -150,20 +153,33 @@ def _newest(items):
                key=lambda i: (i["metadata"].get("creationTimestamp", ""), i["metadata"]["name"]))
 
 
-def _resolved_at(incident):
-    at = ((incident.get("status") or {}).get("resolution") or {}).get("at")
+def _timestamp(value):
     try:
-        return datetime.fromisoformat(str(at).replace("Z", "+00:00")) if at else None
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")) if value else None
     except ValueError:
         return None
 
 
 def resolved_within(incident, at, grace):
     """Whether `incident` is Resolved less than `grace` seconds before `at`."""
-    if (incident.get("status") or {}).get("state") != "Resolved":
+    st = incident.get("status") or {}
+    if st.get("state") != "Resolved":
         return False
-    resolved = _resolved_at(incident)
+    resolved = _timestamp((st.get("resolution") or {}).get("at"))
     return bool(resolved) and (at - resolved).total_seconds() < grace
+
+
+def holds_firings(incident, at, hold=None):
+    """Whether an open incident without an analysis takes its alert's firings at `at`: always
+    while its RCA runs, and for `hold` seconds (FAILED_ANALYSIS_HOLD) after the RCA failed,
+    counted from status.completedAt, else from its creation."""
+    st = incident.get("status") or {}
+    if st.get("state") in (None, "Analyzing"):
+        return True
+    since = _timestamp(st.get("completedAt")) or _timestamp(
+        incident["metadata"].get("creationTimestamp"))
+    hold = FAILED_ANALYSIS_HOLD if hold is None else hold
+    return since is None or (at - since).total_seconds() < hold
 
 
 def _alert_incidents(ns, alert_ref):
@@ -178,8 +194,10 @@ def _pick(alert, items, at, grace, rows):
       1. the open incident (any state but Resolved and Closed) with an analysis that one LLM call
          names as the cause of the alert's current records, among the newest
          compare.MAX_CANDIDATES;
-      2. the newest open incident without an analysis (Analyzing, or its RCA failed): there is
-         nothing to compare with, and a new incident would rerun the analysis;
+      2. the newest open incident without an analysis: one still Analyzing, or one whose RCA
+         failed less than FAILED_ANALYSIS_HOLD seconds ago. There is nothing to compare with,
+         and a new incident would rerun the analysis. Past the hold, a failed incident takes
+         no more firings, so a new incident gets a fresh RCA;
       3. the alert's latest incident when it is Resolved less than `grace` seconds (one
          spec.interval) ago: a `where` alert keeps counting rows from before the fix for its
          lookback window, and those belong to the incident the fix resolved. A Closed incident
@@ -208,7 +226,7 @@ def _pick(alert, items, at, grace, rows):
                   f"{match or 'none'} ({reason})", flush=True)
             if match:
                 return by_name[match]
-    unanalyzed = [i for i in open_ if not compare.comparable(i)]
+    unanalyzed = [i for i in open_ if not compare.comparable(i) and holds_firings(i, at)]
     if unanalyzed:
         return unanalyzed[0]
     latest = _newest(items)
@@ -313,7 +331,8 @@ def recover_interrupted(ns=NAMESPACE):
         if (incident.get("status") or {}).get("state") not in (None, "Analyzing"):
             continue
         try:
-            _patch_status(ns, incident, {"state": "Open", "error": INTERRUPTED})
+            _patch_status(ns, incident, {"state": "Open", "error": INTERRUPTED,
+                                         "completedAt": _now()})
             print(f"[incident] {ns}/{incident['metadata']['name']}: interrupted, opened", flush=True)
         except Exception as e:  # noqa: BLE001 — a 409 means another writer moved it
             print(f"[incident] {ns}/{incident['metadata']['name']}: recovery skipped ({e})",

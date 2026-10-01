@@ -224,6 +224,39 @@ class TestOpeningPolicy(WriterCase):
         self.assertEqual(self.k8s.only()["status"]["firings"], 4)
         self.assertEqual((self.compared, self.rca), ([], []))
 
+    def test_a_failed_RCA_stops_taking_firings_after_the_hold(self):
+        """Past FAILED_ANALYSIS_HOLD the failed incident stays Open, and a firing nothing else
+        covers opens a new incident with a fresh RCA."""
+        self.k8s.put(NS, f"{ALERT}-x", ALERT, state="Open", firings=3,
+                     completed=ago(handler.FAILED_ANALYSIS_HOLD + 60))
+        self.k8s.write_status(NS, f"{ALERT}-x", {"error": "The analysis failed: 429"})
+        self.fire()
+        self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-x")]["status"]["firings"], 3)
+        self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-x")]["status"]["state"], "Open")
+        self.assertEqual((len(self.k8s.incidents), len(self.rca)), (2, 1))
+
+    def test_a_failed_RCA_inside_the_hold_still_takes_the_firing(self):
+        self.k8s.put(NS, f"{ALERT}-x", ALERT, state="Open", firings=3,
+                     completed=ago(handler.FAILED_ANALYSIS_HOLD - 60))
+        self.k8s.write_status(NS, f"{ALERT}-x", {"error": "The analysis failed: 429"})
+        self.fire()
+        self.assertEqual(self.k8s.only()["status"]["firings"], 4)
+        self.assertEqual(self.rca, [])
+
+    def test_an_incident_still_analyzing_takes_firings_past_the_hold(self):
+        self.k8s.put(NS, f"{ALERT}-x", ALERT, state="Analyzing", firings=3,
+                     created=ago(handler.FAILED_ANALYSIS_HOLD + 60))
+        self.fire()
+        self.assertEqual(self.k8s.only()["status"]["firings"], 4)
+        self.assertEqual(self.rca, [])
+
+    def test_the_hold_counts_from_creation_without_completedAt(self):
+        old = {"metadata": {"creationTimestamp": ago(handler.FAILED_ANALYSIS_HOLD + 60)},
+               "status": {"state": "Open", "error": "The analysis failed: 429"}}
+        now = datetime.now(timezone.utc)
+        self.assertFalse(handler.holds_firings(old, now))
+        self.assertTrue(handler.holds_firings(old, now, hold=handler.FAILED_ANALYSIS_HOLD + 600))
+
     def test_an_equal_analyzed_incident_takes_the_firing_before_an_analyzing_one(self):
         self.analyzed(f"{ALERT}-x", created="2026-09-25T09:00:00Z")
         self.k8s.put(NS, f"{ALERT}-y", ALERT, state="Analyzing", created="2026-09-25T10:00:00Z")
@@ -512,6 +545,7 @@ class TestRecoverInterrupted(WriterCase):
         got = {n: o["status"] for (_, n), o in self.k8s.incidents.items()}
         self.assertEqual((got["a-1"]["state"], got["a-1"]["error"]), ("Open", handler.INTERRUPTED))
         self.assertEqual(got["b-1"]["state"], "Open")
+        self.assertIn("completedAt", got["a-1"])            # the failed-RCA hold counts from here
         self.assertNotIn("error", got["c-1"])
 
     def test_a_late_analysis_clears_the_interruption(self):

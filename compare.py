@@ -11,12 +11,14 @@ cannot drift:
 Incidents are numbered in the prompt, not named: the gateway's PhoneNumber guard masks the
 timestamp in an incident's name, so the model could not repeat it.
 
-Stdlib only (json/re), unit-testable without the cluster.
+Stdlib only (json/os/re), unit-testable without the cluster.
 """
 import json
+import os
 import re
 
-MAX_CANDIDATES = 10   # newest open incidents compared; older ones never take a firing
+# Newest open incidents compared; older ones never take a firing through the comparison.
+MAX_CANDIDATES = max(1, int(os.environ.get("MAX_COMPARE_CANDIDATES", "50")))
 MAX_ROWS = 20         # record groups quoted, the most frequent first
 ROW_CHARS = 300
 DESCRIPTION_CHARS = 1000

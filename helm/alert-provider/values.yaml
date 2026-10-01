@@ -18,6 +18,14 @@ config:
   # firing, no agent. Provider OpenAI (its baseUrl; with apiKeyPassthrough the key is the service
   # JWT) or Gemini. A firing no open incident covers opens a new incident.
   compareModelConfig: gemini-flash
+  # How many of an alert's newest open, analyzed incidents one comparison weighs. An older one
+  # can still take a firing as unanalyzed, never through the comparison. Each adds up to ~5.5k
+  # characters (its root cause and three scripts) to the prompt.
+  maxCompareCandidates: 50
+  # Seconds an incident whose RCA failed keeps taking its alert's firings, counted from the
+  # failure. Past it, a firing nothing else covers opens a new incident with a fresh RCA; the
+  # failed one stays Open until a person closes it.
+  failedAnalysisHold: 1800
   # Intra-service auth (Option A). Base URL of the authn service. When set, the handler exchanges its
   # projected SA token (audience "authn") at <authnUrl>/serviceaccount/login for a Krateo JWT and
   # presents it on the A2A calls (the RCA and the comparisons), so the gated agents accept them; a

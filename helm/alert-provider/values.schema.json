@@ -96,6 +96,20 @@
           "description": "kagent ModelConfig, in the release namespace, whose model judges which open incident of a firing alert covers the alert's current records: one chat-completions call per firing, with no agent. Provider OpenAI (its baseUrl; with apiKeyPassthrough the key is the service JWT) or Gemini. A firing that no open incident covers opens a new incident.",
           "default": "gemini-flash"
         },
+        "maxCompareCandidates": {
+          "type": "integer",
+          "minimum": 1,
+          "title": "Comparison candidates",
+          "description": "How many of an alert's newest open, analyzed incidents one comparison weighs. An older one can still take a firing as unanalyzed, never through the comparison. Each adds up to about 5,500 characters to the prompt.",
+          "default": 50
+        },
+        "failedAnalysisHold": {
+          "type": "integer",
+          "minimum": 0,
+          "title": "Failed-RCA hold (s)",
+          "description": "Seconds an incident whose RCA failed keeps taking its alert's firings, counted from the failure. Past it, a firing nothing else covers opens a new incident with a fresh RCA; the failed one stays Open until a person closes it.",
+          "default": 1800
+        },
         "authnUrl": {
           "type": "string",
           "title": "authn base URL (intra-service auth)",

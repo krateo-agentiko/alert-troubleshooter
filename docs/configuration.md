@@ -14,6 +14,8 @@ timestamp: 2026-08-20T00:00:00Z
 | `image.tag` | chart appVersion | image tag; pin to override |
 | `config.autopilotA2aUrl` | `http://incident-agent.krateo-system.svc:8080/` | the RCA agent's A2A endpoint |
 | `config.compareModelConfig` | `gemini-flash` | the kagent ModelConfig whose model names the open incident that covers a firing; provider OpenAI or Gemini |
+| `config.maxCompareCandidates` | `50` | how many of an alert's newest open, analyzed incidents one comparison weighs |
+| `config.failedAnalysisHold` | `1800` | seconds an incident whose RCA failed keeps taking its alert's firings; past it, a new incident gets a fresh RCA |
 | `config.authnUrl` | `""` | authn, for the service JWT on both A2A calls; empty = unauthenticated |
 | `config.reconcileInterval` | `60` | seconds between reconciler passes; each pass that finds an alert ALERT is one firing |
 

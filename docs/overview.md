@@ -49,9 +49,12 @@ state but `Resolved` and `Closed`. For each firing, `handler.fire`:
    more `status.firings`, a new `status.lastFiredAt`, no RCA. The incident controller writes the
    same status, so the write is conditioned on the resourceVersion it read and retried on a
    conflict;
-3. else counts the firing on the newest open incident without an analysis (still `Analyzing`, or
-   its RCA failed, whatever text the failure left in `status.report`): there is nothing to compare
-   with, and a new incident would rerun the analysis;
+3. else counts the firing on the newest open incident without an analysis: one still
+   `Analyzing`, or one whose RCA failed (whatever text the failure left in `status.report`) less
+   than `config.failedAnalysisHold` (1800 s) after its `status.completedAt`. There is nothing to
+   compare with, and a new incident would rerun the analysis. Past the hold, a failed incident
+   takes no more firings and stays `Open` until a person closes it, so the next firing nothing
+   else covers opens a new incident with a fresh RCA;
 4. else, if the alert's latest incident is `Resolved` and its `status.resolution.at` is less than
    one `spec.interval` ago (5m when unset), counts the firing on that incident the same way, and it
    stays `Resolved`. A `where` alert keeps counting the rows from before the fix for its lookback
@@ -90,7 +93,7 @@ state but `Resolved` and `Closed`. For each firing, `handler.fire`:
   `apiKeyPassthrough`), or provider Gemini with its `apiKeySecret`. It times out after
   `COMPARE_TIMEOUT` (60 s).
 - The system prompt is two sentences. The user message holds the alert, its current records and
-  the 10 newest open analyzed incidents, newest first, each as its root cause and its
+  the `config.maxCompareCandidates` (50) newest open analyzed incidents, newest first, each as its root cause and its
   precondition, apply and verify scripts.
 - The records are the alert's `where` rows over one `spec.interval`, from HyperDX's
   `/api/v2/charts/series` grouped by `compare.ROW_GROUP`: a line per distinct record (a k8s

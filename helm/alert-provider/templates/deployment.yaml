@@ -149,6 +149,10 @@ spec:
             # The agent that judges whether a firing is the problem an open incident describes.
             - name: COMPARE_MODEL_CONFIG
               value: {{ .Values.config.compareModelConfig | quote }}
+            - name: MAX_COMPARE_CANDIDATES
+              value: {{ .Values.config.maxCompareCandidates | quote }}
+            - name: FAILED_ANALYSIS_HOLD
+              value: {{ .Values.config.failedAnalysisHold | quote }}
             # Intra-service auth (Option A): when set, the handler exchanges the projected SA token
             # (audience "authn", mounted below) at <authnUrl>/serviceaccount/login for a Krateo JWT and
             # presents it on the A2A calls (the RCA and the comparisons), so the gated agents accept them.

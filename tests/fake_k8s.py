@@ -7,6 +7,7 @@ depends on. The Incident CRD is installed nowhere these tests run, so this fake 
 - the CRD's state rules: Resolved can only become Closed, and Closed is final (422).
 """
 import copy
+from datetime import datetime, timezone
 import types
 from urllib.parse import unquote
 
@@ -43,13 +44,18 @@ class FakeK8s:
         obj["metadata"]["resourceVersion"] = str(self.rv)
 
     def put(self, ns, name, alert, state=None, firings=1, created="2026-09-25T10:00:00Z",
-            root_cause=None):
-        """Seed an Incident as the apiserver would hold it; `root_cause` gives it an analysis."""
+            root_cause=None, completed=None):
+        """Seed an Incident as the apiserver would hold it; `root_cause` gives it an analysis.
+        Past Analyzing it carries the RCA's completedAt, `completed` or else now."""
+        status = {"firings": firings} | ({"state": state} if state else {})
+        if root_cause:
+            status["rootCause"] = {"statement": root_cause}
+        if state not in (None, "Analyzing"):
+            status["completedAt"] = completed or datetime.now(timezone.utc).isoformat()
         obj = {"metadata": {"name": name, "namespace": ns, "creationTimestamp": created,
                             "labels": {"observability.krateo.io/alert": alert}},
                "spec": {"alertRef": {"name": alert, "namespace": ns}},
-               "status": {"firings": firings} | ({"state": state} if state else {})
-               | ({"rootCause": {"statement": root_cause}} if root_cause else {})}
+               "status": status}
         self._bump(obj)
         self.incidents[(ns, name)] = obj
         return obj

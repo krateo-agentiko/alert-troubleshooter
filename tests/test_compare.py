@@ -38,6 +38,18 @@ ANALYZED = incident(
     report="## Root cause\npayments-api runs out of memory.")
 
 
+class TestCandidateCap(unittest.TestCase):
+    def test_fifty_by_default_and_MAX_COMPARE_CANDIDATES_overrides(self):
+        import importlib
+        self.assertEqual(compare.MAX_CANDIDATES, 50)
+        os.environ["MAX_COMPARE_CANDIDATES"] = "7"
+        try:
+            self.assertEqual(importlib.reload(compare).MAX_CANDIDATES, 7)
+        finally:
+            del os.environ["MAX_COMPARE_CANDIDATES"]
+            importlib.reload(compare)
+
+
 class TestComparable(unittest.TestCase):
     def test_an_incident_with_a_root_cause_or_a_report_is_comparable(self):
         self.assertTrue(compare.comparable(ANALYZED))
