@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema",
-  "title": "Alert Troubleshooter",
-  "description": "Bridges a HyperDX observability alert to an incident-agent root-cause analysis, written back as a TroubleshootingReport CR the portal renders.",
+  "title": "Alert Provider",
+  "description": "Turns each firing of an observability Alert into an Incident with an incident-agent root-cause analysis and its how-to-fix scripts.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -57,12 +57,26 @@
         "repository": {
           "type": "string",
           "title": "Image repository",
-          "default": "ghcr.io/krateo-platformops/alert-troubleshooter"
+          "default": "ghcr.io/krateo-platformops/alert-provider"
         },
         "tag": {
           "type": "string",
           "title": "Image tag",
           "description": "Container image tag. Empty defaults to the chart appVersion (= the release tag), so chart and image move together."
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "title": "Image pull secrets",
+      "description": "Pull credentials for the private image, set on the krateo-alert-provider ServiceAccount (the Deployment and the hyperdx-key-bootstrap Job). The Krateo installer wires it from registryAuth.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          }
         }
       }
     },
@@ -76,10 +90,30 @@
           "description": "A2A endpoint of the agent the webhook calls for root-cause analysis. Defaults to the in-cluster kagent A2A Service `http://incident-agent.krateo-system.svc:8080/` (kagent names the Service after the Agent's metadata.name).",
           "default": "http://incident-agent.krateo-system.svc:8080/"
         },
+        "compareModelConfig": {
+          "type": "string",
+          "title": "Comparison ModelConfig",
+          "description": "kagent ModelConfig, in the release namespace, whose model judges which open incident of a firing alert covers the alert's current records: one chat-completions call per firing, with no agent. Provider OpenAI (its baseUrl; with apiKeyPassthrough the key is the service JWT) or Gemini. A firing that no open incident covers opens a new incident.",
+          "default": "gemini-flash"
+        },
+        "maxCompareCandidates": {
+          "type": "integer",
+          "minimum": 1,
+          "title": "Comparison candidates",
+          "description": "How many of an alert's newest open, analyzed incidents one comparison weighs. An older one can still take a firing as unanalyzed, never through the comparison. Each adds up to about 5,500 characters to the prompt.",
+          "default": 50
+        },
+        "failedAnalysisHold": {
+          "type": "integer",
+          "minimum": 0,
+          "title": "Failed-RCA hold (s)",
+          "description": "Seconds an incident whose RCA failed keeps taking its alert's firings, counted from the failure. Past it, a firing nothing else covers opens a new incident with a fresh RCA; the failed one stays Open until a person closes it.",
+          "default": 1800
+        },
         "authnUrl": {
           "type": "string",
           "title": "authn base URL (intra-service auth)",
-          "description": "Base URL of the authn service. When set, the handler exchanges its projected ServiceAccount token (audience \"authn\") at `<authnUrl>/serviceaccount/login` for a Krateo JWT and presents it on the A2A call, so incident-agent can reach its agentgateway-gated MCP tools; a `serviceaccount.authn.krateo.io` ServiceAccount mapping CR is also rendered. Requires authn's serviceaccount strategy. Empty (default) disables it — the A2A call is unauthenticated (safe on older clusters with no gateway). Enable in-cluster with `http://authn.krateo-system.svc`.",
+          "description": "Base URL of the authn service. When set, the handler exchanges its projected ServiceAccount token (audience \"authn\") at `<authnUrl>/serviceaccount/login` for a Krateo JWT and presents it on the A2A calls, so the agentgateway authenticates them and incident-agent can reach its gated MCP tools; a `serviceaccount.authn.krateo.io` ServiceAccount mapping CR is also rendered. Requires authn's serviceaccount strategy. Empty (default) disables it — the A2A call is unauthenticated (safe on older clusters with no gateway). Enable in-cluster with `http://authn.krateo-system.svc`.",
           "default": ""
         },
         "hyperdxApiUrl": {
@@ -88,16 +122,10 @@
           "description": "HyperDX v2 external API the reconciler pushes Alert CRs to (Bearer auth). Defaults to the krateo-clickstack-api Service.",
           "default": "http://krateo-clickstack-api.krateo-system.svc:8000"
         },
-        "reportCooldown": {
-          "type": "integer",
-          "title": "Report cooldown (s)",
-          "description": "Dedup window in seconds: don't re-analyze the same alert within this.",
-          "default": 1800
-        },
         "reconcileInterval": {
           "type": "integer",
           "title": "Reconcile interval (s)",
-          "description": "How often (seconds) the reconciler pushes Alert CRs to HyperDX.",
+          "description": "How often (seconds) the reconciler pushes Alert CRs to HyperDX and mirrors their state. Each pass that finds an alert ALERT is one firing of it.",
           "default": 60
         },
         "defaultAlerts": {
@@ -120,7 +148,8 @@
                 "type": "string"
               },
               "threshold": {
-                "type": "number"
+                "type": "integer",
+                "description": "A row count. Typed integer, not number: crdgen types number as a string in the generated CRD."
               },
               "thresholdType": {
                 "type": "string"

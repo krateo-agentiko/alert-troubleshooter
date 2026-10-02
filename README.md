@@ -1,42 +1,50 @@
-# krateo-alert-troubleshooter
+# krateo-alert-provider
 
 ## What is this
-Bridges a **HyperDX alert** to an **Autopilot root-cause analysis**, in the background — no
-browser required. The "auto-troubleshoot on fire" path for the Krateo observability Alerts.
+Turns a firing Krateo observability **Alert** into **Incidents**, one per problem, each with an
+**incident-agent root-cause analysis**, in the background — no browser required.
 
 ```
-HyperDX alert fires → webhook → krateo-alert-troubleshooter → A2A call to krateo-autopilot
-                                                      → TroubleshootingReport CR (status.report = analysis)
-                                                      → portal Alerts section renders it
+every 60 s, Alert is ALERT in HyperDX → krateo-alert-provider
+    → an open incident of the same problem? (one LLM call)        yes → status.firings++
+                                                                  no  → new Incident → A2A call to incident-agent
+                                                                        → status: analysis + howToFix scripts, state Open
 ```
 
 ## What it does
-On `POST /webhook` (a HyperDX alert-fired payload) the handler:
-1. creates a `TroubleshootingReport` CR (`observability.krateo.io/v1alpha1`, phase `Analyzing`),
-2. calls the Autopilot A2A agent (`krateo-autopilot`, JSON-RPC `message/stream`) with an
-   end-to-end troubleshooting prompt,
-3. patches the CR status with the streamed analysis (`phase: Ready`, `report: <markdown>`).
+The reconciler mirrors each Alert's HyperDX state every pass; a pass that finds it ALERT is a
+firing, and the handler:
+1. asks the comparison model, in one call over the Alert's open analyzed `Incident`s
+   (`observability.krateo.io/v1alpha1`), which one causes its current records, and counts the
+   firing on it,
+2. else creates one in state `Analyzing` and calls incident-agent over A2A (JSON-RPC
+   `message/stream`) with the incident's prompt,
+3. writes the analysis and its `howToFix` scripts to the Incident's status, in state `Open`.
 
-Acks the webhook immediately (202) and analyses in a background thread so HyperDX doesn't time out.
+The incident controller (incident-controller) runs the scripts from there. See
+[docs/overview.md](docs/overview.md#incidents).
+
+HyperDX's webhook is acked (202) and logged; the reconciler's pass is what fires an alert.
 
 ## Build
 Image is built + pushed by CI (`.github/workflows/release.yaml`) to
-`ghcr.io/krateo-platformops/alert-troubleshooter` on push to `main` / tags. No local docker push.
+`ghcr.io/krateo-platformops/alert-provider` on push to `main` / tags. No local docker push.
 
 ## Deploy
 ```sh
 ```
-Then point a HyperDX webhook at `http://krateo-alert-troubleshooter.krateo-system.svc:8080/webhook`
-and reference it as the `channel.webhookId` on your `Alert` CRs.
+The reconciler creates the HyperDX webhook and alerts from the `Alert` CRs.
 
 ## Config (env)
-- `NAMESPACE` (default `krateo-system`) — where reports are created.
-- `AUTOPILOT_A2A_URL` (default `http://krateo-autopilot.krateo-system.svc:8080/`).
+- `NAMESPACE` (default `krateo-system`) — the namespace of its Alerts and their Incidents.
+- `AUTOPILOT_A2A_URL` — the RCA agent (chart default `http://incident-agent.krateo-system.svc:8080/`).
 - `A2A_TIMEOUT` (default `180`s).
+- `COMPARE_MODEL_CONFIG` — the kagent ModelConfig whose model compares incidents (default `gemini-flash`).
+- `COMPARE_TIMEOUT` (default `60`s).
 
 ## Install
 ```sh
-helm install alert-troubleshooter oci://ghcr.io/krateo-platformops/charts/alert-troubleshooter --version <tag> -n krateo-system
+helm install alert-provider oci://ghcr.io/krateo-platformops/charts/alert-provider --version <tag> -n krateo-system
 ```
 
 ## Configure

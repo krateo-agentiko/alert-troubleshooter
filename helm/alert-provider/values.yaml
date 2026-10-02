@@ -1,17 +1,34 @@
 # The controller image. tag defaults to the chart appVersion (= release tag), so chart and
 # image move together; override to pin.
 image:
-  repository: ghcr.io/krateo-platformops/alert-troubleshooter
+  repository: ghcr.io/krateo-platformops/alert-provider
   tag: ""
+# Pull credentials for the image, on the krateo-alert-provider ServiceAccount (so the Deployment
+# and the hyperdx-key-bootstrap Job both use them). The image is private: the Krateo installer wires
+# this from registryAuth. e.g. [{name: krateo-registry-image-pull}]
+imagePullSecrets: []
 
 config:
   # A2A endpoint of the agent the webhook calls for root-cause analysis. Default = incident-agent
   # (has the k8s/Helm/ClickHouse read tools an RCA needs; autopilot has neither). In-cluster kagent
   # A2A Service, named after the Agent's metadata.name -> incident-agent.<namespace>.svc:8080.
   autopilotA2aUrl: http://incident-agent.krateo-system.svc:8080/
+  # kagent ModelConfig, in the release namespace, whose model judges which open incident of a
+  # firing alert covers the alert's current records (compare.py): one chat-completions call per
+  # firing, no agent. Provider OpenAI (its baseUrl; with apiKeyPassthrough the key is the service
+  # JWT) or Gemini. A firing no open incident covers opens a new incident.
+  compareModelConfig: gemini-flash
+  # How many of an alert's newest open, analyzed incidents one comparison weighs. An older one
+  # can still take a firing as unanalyzed, never through the comparison. Each adds up to ~5.5k
+  # characters (its root cause and three scripts) to the prompt.
+  maxCompareCandidates: 50
+  # Seconds an incident whose RCA failed keeps taking its alert's firings, counted from the
+  # failure. Past it, a firing nothing else covers opens a new incident with a fresh RCA; the
+  # failed one stays Open until a person closes it.
+  failedAnalysisHold: 1800
   # Intra-service auth (Option A). Base URL of the authn service. When set, the handler exchanges its
   # projected SA token (audience "authn") at <authnUrl>/serviceaccount/login for a Krateo JWT and
-  # presents it on the A2A call, so incident-agent can reach its agentgateway-gated MCP tools; a
+  # presents it on the A2A calls (the RCA and the comparisons), so the gated agents accept them; a
   # serviceaccount.authn.krateo.io ServiceAccount mapping CR is also rendered. Requires authn's
   # serviceaccount strategy. Empty (default) DISABLES it — unauthenticated A2A, exactly as before
   # (safe on older clusters with no gateway). Enable in-cluster with: http://authn.krateo-system.svc
@@ -19,9 +36,8 @@ config:
   # HyperDX v2 external API the reconciler pushes Alert CRs to (Bearer auth via hyperdx-api-token).
   # Default = the krateo-clickstack-api Service the observability stack exposes.
   hyperdxApiUrl: http://krateo-clickstack-api.krateo-system.svc:8000
-  # Dedup window (seconds): don't re-analyze the same alert within this.
-  reportCooldown: 1800
-  # How often (seconds) the reconciler pushes Alert CRs to HyperDX.
+  # How often (seconds) the reconciler pushes Alert CRs to HyperDX and mirrors their state. Each
+  # pass that finds an alert ALERT is one firing of it.
   reconcileInterval: 60
   # Default Alert CRs the reconciler seeds into HyperDX (rendered to DEFAULT_ALERTS_JSON). Set to []
   # to seed none. Each firing auto-launches a full incident-agent RCA, so this default set is kept
@@ -43,7 +59,7 @@ config:
     where: >-
       (positionCaseInsensitive(Body, 'Reconciler error') > 0
        OR JSONExtractString(Body, 'object', 'reason') = 'CannotObserveExternalResource')
-      AND ServiceName NOT IN ('krateo-observability', 'krateo-alert-troubleshooter',
+      AND ServiceName NOT IN ('krateo-observability', 'krateo-alert-provider',
           'krateo-clickstack', 'krateo-clickstack-clickhouse-clickhouse', 'clickhouse-mcp-server',
           'incident-agent', 'krateo-autopilot', 'kagent', 'repo-mcp-server')
     interval: 15m

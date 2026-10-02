@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """Bearer-auth reconciler for Alert CRs (alerts.observability.krateo.io).
 
-Runs as a background thread in the krateo-alert-troubleshooter process:
+Runs as a background thread in the krateo-alert-provider process:
 
   every RECONCILE_INTERVAL seconds:
-    ensure the shared webhook (-> this troubleshooter's /webhook) ->
-    for each Alert CR:
+    ensure the shared webhook (-> this alert-provider's /webhook) ->
+    for each `where` Alert CR:
         being deleted (deletionTimestamp) -> delete its HyperDX alert+dashboard, drop the finalizer
         else, no status.hyperdxAlertId    -> create dashboard-tile + alert, record ids in status
         else                              -> mirror the live alert state (OK/ALERT/PENDING) to status
+        live state ALERT                  -> a firing: handler.fire, off the reconcile thread
     (a finalizer on each CR guarantees the HyperDX resources are removed before the CR is deleted)
 
-Alerts flow: HyperDX evaluates the alert; when it fires it POSTs the webhook -> this service's
-/webhook -> Autopilot RCA -> TroubleshootingReport. The reconciler only manages config + status.
+Each HyperDX alert is named after its CR's metadata.name.
+
+Alerts flow: HyperDX evaluates the alert; each pass that finds it ALERT is one firing, which
+handler.fire counts on an incident or turns into a new Incident with an RCA. The HyperDX webhook
+only acknowledges (handler.process): a HyperDX alert needs a channel.
 
 Auth: HYPERDX_ACCESS_KEY (user.accessKey from hyperdx-api-token Secret, written by the bootstrap
 Job). Calls go to HYPERDX_API_URL (krateo-clickstack-api.krateo-system.svc:8000, port 8000 =
@@ -20,42 +24,22 @@ HyperDX Express backend) using Bearer auth against the /api/v2 external API.
 """
 import json
 import os
+import threading
 import time
 
 import requests
 
+import compare
+import handler
 import hyperdx_v2
-from handler import _get_report, _k8s, _now, _stable_name, patch_status  # reuse the apiserver helpers
+from handler import _k8s, _now  # reuse the apiserver helpers
 
 GROUP, VERSION, PLURAL = "observability.krateo.io", "v1alpha1", "alerts"
 NAMESPACE = os.environ.get("NAMESPACE", "krateo-system")
-
-
-def _reconcile_report_lifecycle(alert_name, state):
-    """Advance the incident report's lifecycle from the triggering alert's live state:
-      - a user-set spec.lifecycle is mirrored to status.lifecycle (the portal's manual Resolve), and
-      - an alert that has returned to OK auto-resolves its still-open report (-> resolved).
-    Level-based and idempotent — a no-op when there is no report for this alert or nothing changes.
-    Never raises into the reconcile loop."""
-    if not alert_name:
-        return
-    name = _stable_name(alert_name)
-    try:
-        rep = _get_report(NAMESPACE, name)
-        if not rep:
-            return
-        spec_lc = ((rep.get("spec") or {}).get("lifecycle") or "").strip()
-        cur_lc = ((rep.get("status") or {}).get("lifecycle") or "open")
-        desired = spec_lc or ("resolved" if (state == "OK" and cur_lc == "open") else cur_lc)
-        if desired and desired != cur_lc:
-            patch_status(NAMESPACE, name, {"lifecycle": desired})
-            print(f"[reconciler] report {name} lifecycle {cur_lc} -> {desired}", flush=True)
-    except Exception as e:  # noqa: BLE001 — lifecycle bookkeeping must never break alert sync
-        print(f"[reconciler] report {name} lifecycle reconcile skipped ({e})", flush=True)
 INTERVAL = int(os.environ.get("RECONCILE_INTERVAL", "60"))
-WEBHOOK_NAME = os.environ.get("WEBHOOK_NAME", "krateo-autopilot")
+WEBHOOK_NAME = os.environ.get("WEBHOOK_NAME", "krateo-alert-provider")
 WEBHOOK_TARGET = os.environ.get(
-    "WEBHOOK_TARGET_URL", "http://krateo-alert-troubleshooter.krateo-system.svc:8080/webhook")
+    "WEBHOOK_TARGET_URL", "http://krateo-alert-provider.krateo-system.svc:8080/webhook")
 # Default Alert CRs to seed on startup (JSON array of specs+name). The composition ships these here
 # rather than as chart CRs — Helm can't validate a CR before its CRD is installed in the same pass.
 DEFAULT_ALERTS_JSON = os.environ.get("DEFAULT_ALERTS_JSON", "")
@@ -169,6 +153,20 @@ def tautology(threshold, threshold_type):
     return None
 
 
+def _ok_since(status, state):
+    """`status.okSince` for a CR whose live state is now `state`.
+
+    The time the alert last turned OK, kept while it stays OK; an OK alert with none gets now.
+    None in every other state, which a merge patch writes as a delete. Display-only: nothing
+    reads it to close or resolve anything.
+    """
+    if state != "OK":
+        return None
+    if status.get("state") == "OK" and status.get("okSince"):
+        return status["okSince"]
+    return _now()
+
+
 def _push_spec(hdx, cr, source, webhook_id, live_alert):
     """Push the CR's spec onto the live HyperDX alert when they disagree. Returns what changed.
 
@@ -182,10 +180,13 @@ def _push_spec(hdx, cr, source, webhook_id, live_alert):
     TWO OBJECTS, BECAUSE THE SPEC SPANS TWO. `threshold`/`thresholdType`/`interval`/`message` live
     on the ALERT; `where` lives on the dashboard TILE. A push that only did the first would leave a
     corrected filter unapplied, which is the same silent failure one level down.
+
+    The alert's name is pushed too: it is the CR's metadata.name, which ties the HyperDX alert to
+    its CR (see _release_shared). An alert still named after a displayName is renamed here.
     """
     spec = cr.get("spec", {})
     status = cr.get("status", {})
-    name, display = cr["metadata"]["name"], spec.get("displayName") or cr["metadata"]["name"]
+    name = cr["metadata"]["name"]
 
     # BOTH IDS COME FROM THE LIVE ALERT, and mixing the two sources is a real 400 seen on
     # krateo-057: `sre-krateo-composition-reconcile-error` evaluates tile 6aa3f3fe…5666 on dashboard
@@ -211,10 +212,11 @@ def _push_spec(hdx, cr, source, webhook_id, live_alert):
     if dash_id:
         live_where = hdx.tile_where(dash_id)
         if live_where is not None and live_where != want_where:
-            hdx.update_dashboard_tile(dash_id, f"krateo-alert-{name}", source, want_where)
+            hdx.update_dashboard_tile(dash_id, f"krateo-alert-{name}", source, want_where,
+                                      tile_id or "count")
             changed.append("where")
 
-    drift = hdx.alert_drift(live_alert,
+    drift = hdx.alert_drift(live_alert, name=name,
                             interval=spec.get("interval", "5m"),
                             threshold=spec.get("threshold", 1),
                             threshold_type=spec.get("thresholdType", "above"),
@@ -222,7 +224,7 @@ def _push_spec(hdx, cr, source, webhook_id, live_alert):
     if drift:
         # Both ids from the pair resolved above, so the body always describes a tile that is
         # actually on the dashboard it names.
-        hdx.update_alert(live_alert["id"], display, dash_id, tile_id or "count", webhook_id,
+        hdx.update_alert(live_alert["id"], name, dash_id, tile_id or "count", webhook_id,
                          interval=spec.get("interval", "5m"),
                          threshold=spec.get("threshold", 1),
                          threshold_type=spec.get("thresholdType", "above"),
@@ -232,9 +234,10 @@ def _push_spec(hdx, cr, source, webhook_id, live_alert):
 
 
 def _reconcile_cr(hdx, cr, source, webhook_id):
+    """Push the CR to HyperDX and mirror its live state. Returns that state, or None when the CR
+    is refused."""
     meta, spec, status = cr["metadata"], cr.get("spec", {}), cr.get("status", {})
     name = meta["name"]
-    display = spec.get("displayName") or name
     hdx_id = status.get("hyperdxAlertId")
 
     # REFUSE BEFORE CREATING, and refuse an existing one too. A tautological threshold is not a
@@ -249,55 +252,107 @@ def _reconcile_cr(hdx, cr, source, webhook_id):
     if why:
         _patch_status(name, {"phase": "Invalid", "error": why, "lastSyncedAt": _now()})
         print(f"[reconciler] Alert {name} refused: {why}", flush=True)
-        return
+        return None
 
     live = {a["id"]: a for a in hdx.list_alerts()}
-    if hdx_id and hdx_id in live:
-        st = live[hdx_id].get("state", "OK")
+    # The alert the status names, else the one already named after this CR: a status that lost
+    # its id adopts its own alert instead of creating a second one.
+    alert = live.get(hdx_id) if hdx_id else None
+    if alert is None:
+        alert = next((a for a in live.values() if a.get("name") == name), None)
+    if alert is not None:
+        st = alert.get("state", "OK")
+        # The ids come from the live alert, so the status names the dashboard it actually reads.
+        ids = {"hyperdxAlertId": alert["id"]}
+        if alert.get("dashboardId"):
+            ids["hyperdxDashboardId"] = alert["dashboardId"]
         # PUSH BEFORE MIRRORING. The old order was "mirror and return", which is what made the CR
         # assert agreement it had never established.
         try:
-            changed = _push_spec(hdx, cr, source, webhook_id, live[hdx_id])
+            changed = _push_spec(hdx, cr, source, webhook_id, alert)
         except Exception as e:  # noqa: BLE001 — a failed push must not stop state mirroring
             # AND MUST NOT CLAIM Synced. `phase` used to say Synced unconditionally here; saying it
             # while the spec sits unpushed is what cost an afternoon to find, because the status
             # actively asserted the opposite of the truth.
-            _patch_status(name, {"state": st, "phase": "SpecDrift", "error": str(e)[:300],
+            _patch_status(name, {**ids, "state": st, "okSince": _ok_since(status, st),
+                                 "phase": "SpecDrift", "error": str(e)[:300],
                                  "lastSyncedAt": _now()})
             print(f"[reconciler] Alert {name}: spec push failed, phase=SpecDrift ({e})", flush=True)
-            _reconcile_report_lifecycle(display, st)
-            return
-        _patch_status(name, {"state": st, "phase": "Synced", "lastSyncedAt": _now()})
+            return st
+        _patch_status(name, {**ids, "state": st, "okSince": _ok_since(status, st),
+                             "phase": "Synced", "lastSyncedAt": _now()})
         if changed:
-            print(f"[reconciler] Alert {name}: pushed {', '.join(changed)} to hyperdx {hdx_id}", flush=True)
-        _reconcile_report_lifecycle(display, st)
-        return
+            print(f"[reconciler] Alert {name}: pushed {', '.join(changed)} to hyperdx {alert['id']}", flush=True)
+        return st
 
-    # (re)create: dashboard-tile then alert on it, both ensure-by-name (idempotent)
-    dash_id, tile_id = hdx.ensure_dashboard_tile(f"krateo-alert-{name}", source, spec.get("where", ""))
-    alert = hdx.ensure_alert(display, dash_id, tile_id, webhook_id,
+    # create: dashboard-tile then an alert on it named after this CR. A tile another alert already
+    # evaluates is never reused.
+    taken = {a.get("tileId") for a in live.values()} - {None}
+    dash_id, tile_id = hdx.ensure_dashboard_tile(f"krateo-alert-{name}", source,
+                                                 spec.get("where", ""), taken=taken)
+    alert = hdx.ensure_alert(name, dash_id, tile_id, webhook_id,
                              interval=spec.get("interval", "5m"),
                              threshold=spec.get("threshold", 1),
                              threshold_type=spec.get("thresholdType", "above"),
                              message=spec.get("message", ""))
     st = alert.get("state", "OK")
     _patch_status(name, {"hyperdxAlertId": alert["id"], "hyperdxDashboardId": dash_id,
-                         "state": st, "phase": "Synced", "lastSyncedAt": _now()})
-    _reconcile_report_lifecycle(display, st)
+                         "state": st, "okSince": _ok_since(status, st),
+                         "phase": "Synced", "lastSyncedAt": _now()})
     print(f"[reconciler] synced Alert {name} -> hyperdx {alert['id']} ({st})", flush=True)
+    return st
+
+
+def _release_shared(hdx, crs):
+    """Leave each HyperDX alert claimed by several CRs to the CR it is named after, if any.
+
+    The other claimants drop the id and create their own alert in this pass. A shared alert named
+    after none of them is deleted, so it stops evaluating one CR's `where` for another.
+    Mutates the claimants' in-memory status so the rest of the pass sees the release.
+    """
+    claims = {}
+    for cr in crs:
+        hdx_id = (cr.get("status") or {}).get("hyperdxAlertId")
+        if hdx_id:
+            claims.setdefault(hdx_id, []).append(cr)
+    shared = {k: v for k, v in claims.items() if len(v) > 1}
+    if not shared:
+        return
+    live = {a["id"]: a for a in hdx.list_alerts()}
+    for hdx_id, group in shared.items():
+        alert_name = (live.get(hdx_id) or {}).get("name")
+        owner = next((cr for cr in group if cr["metadata"]["name"] == alert_name), None)
+        if owner is None and hdx_id in live:
+            hdx.delete_alert(hdx_id)
+        for cr in group:
+            if cr is owner:
+                continue
+            _patch_status(cr["metadata"]["name"], {"hyperdxAlertId": None, "phase": "Pending"})
+            cr.setdefault("status", {})["hyperdxAlertId"] = None
+            print(f"[reconciler] Alert {cr['metadata']['name']}: released shared hyperdx {hdx_id}",
+                  flush=True)
+
+
+def _start_firing(hdx, source, cr):
+    """A firing, off the reconcile thread: a comparison takes seconds, a new incident's RCA
+    minutes. Its records are the alert's `where` rows in `source`, one line per distinct record."""
+    def records(where, seconds):
+        return hdx.record_counts(source["id"], where, seconds, compare.ROW_GROUP)
+    threading.Thread(target=handler.fire, args=(cr, records), daemon=True).start()
 
 
 def reconcile_once(hdx):
+    crs = _list_alert_crs()
     # One pass = one view of the dashboards. Cleared here rather than aged, so a `where` comparison
     # can never read an answer from a previous cycle.
     hdx.invalidate_cache()
     source = hdx.first_source()
-    webhook_id, recreated = hdx.ensure_webhook(WEBHOOK_NAME, WEBHOOK_TARGET,
-                                               description="Krateo Autopilot auto-troubleshooter")
+    webhook_id, recreated = hdx.ensure_webhook(
+        WEBHOOK_NAME, WEBHOOK_TARGET, description="Krateo alert-provider: the HyperDX alerts' channel")
     if recreated:
         # the webhook id changed -> alerts referencing the old id would notify a dead channel.
         # Drop the HyperDX alerts we manage + reset their CR status so they rebuild on this webhook.
-        active = [cr for cr in _list_alert_crs() if not cr["metadata"].get("deletionTimestamp")]
+        active = [cr for cr in crs if not cr["metadata"].get("deletionTimestamp")]
         managed = {cr.get("status", {}).get("hyperdxAlertId") for cr in active} - {None, ""}
         for a in hdx.list_alerts():
             if a["id"] in managed:
@@ -307,13 +362,16 @@ def reconcile_once(hdx):
                     pass
         for cr in active:
             _patch_status(cr["metadata"]["name"], {"hyperdxAlertId": None, "phase": "Pending"})
-    for cr in _list_alert_crs():
+    crs = _list_alert_crs()
+    _release_shared(hdx, [cr for cr in crs if not cr["metadata"].get("deletionTimestamp")])
+    for cr in crs:
         try:
             if cr["metadata"].get("deletionTimestamp"):
                 _finalize(hdx, cr)      # CR is being deleted -> clean up HyperDX + drop finalizer
                 continue
             _ensure_finalizer(cr)       # guard the CR so its HyperDX resources are cleaned on delete
-            _reconcile_cr(hdx, cr, source, webhook_id)
+            if _reconcile_cr(hdx, cr, source, webhook_id) == "ALERT":
+                _start_firing(hdx, source, cr)
         except requests.HTTPError:
             raise  # bubble 401/session issues to the loop for re-login
         except Exception as e:  # noqa: BLE001 — one bad CR shouldn't stall the rest

@@ -10,14 +10,14 @@ metadata:
   name: krateo-composition-reconcile-error
   namespace: krateo-system
   labels:
-    app.kubernetes.io/managed-by: alert-troubleshooter
+    app.kubernetes.io/managed-by: alert-provider
     observability.krateo.io/default: "true"
 spec:
   displayName: "Krateo — composition reconcile errors"
   where: >-
     (positionCaseInsensitive(Body, 'Reconciler error') > 0
      OR JSONExtractString(Body, 'object', 'reason') = 'CannotObserveExternalResource')
-    AND ServiceName NOT IN ('krateo-observability', 'krateo-alert-troubleshooter',
+    AND ServiceName NOT IN ('krateo-observability', 'krateo-alert-provider',
         'krateo-clickstack', 'krateo-clickstack-clickhouse-clickhouse', 'clickhouse-mcp-server',
         'incident-agent', 'krateo-autopilot', 'kagent', 'repo-mcp-server')
   interval: 15m
@@ -31,7 +31,7 @@ metadata:
   name: krateo-platform-crashloop
   namespace: krateo-system
   labels:
-    app.kubernetes.io/managed-by: alert-troubleshooter
+    app.kubernetes.io/managed-by: alert-provider
     observability.krateo.io/default: "true"
 spec:
   displayName: "Krateo — platform pod crash-looping"
@@ -51,7 +51,7 @@ metadata:
   name: krateo-platform-image-pull-failure
   namespace: krateo-system
   labels:
-    app.kubernetes.io/managed-by: alert-troubleshooter
+    app.kubernetes.io/managed-by: alert-provider
     observability.krateo.io/default: "true"
 spec:
   displayName: "Krateo — platform image pull failing"

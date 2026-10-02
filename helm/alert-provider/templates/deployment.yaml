@@ -1,60 +1,66 @@
-# krateo-alert-troubleshooter — the HyperDX-alert → RCA-analysis handler. HyperDX posts a
-# fired alert to http://krateo-alert-troubleshooter.krateo-system.svc:8080/webhook; the handler
-# calls the RCA agent's A2A endpoint (config.autopilotA2aUrl, incident-agent by default) and
-# writes a TroubleshootingReport CR. Image is tag-driven (values.image.tag = chart appVersion),
-# a real tag published (from main@a0bfebf) after the arm64 build fix — verified multi-arch
-# (linux/amd64 + linux/arm64) with `docker buildx imagetools inspect`. Bump this version tag
-# alongside any future handler.py/hyperdx*.py change that needs to reach the cluster.
+# krateo-alert-provider — the HyperDX-alert → Incident handler. Its reconciler mirrors each
+# Alert's HyperDX state every pass; a firing counts on the open incident the comparison model
+# (config.compareModelConfig) names as its cause, or opens an Incident CR
+# (incident-controller's CRD) whose RCA the RCA agent (config.autopilotA2aUrl, incident-agent by
+# default) writes. HyperDX's webhook posts to
+# http://krateo-alert-provider.krateo-system.svc:8080/webhook, which only acknowledges. Image is
+# tag-driven (values.image.tag = chart appVersion), multi-arch (linux/amd64 + linux/arm64). Bump
+# this version tag alongside any handler.py/hyperdx*.py change that needs to reach the cluster.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: krateo-alert-troubleshooter
+  name: krateo-alert-provider
   namespace: krateo-system
+{{- with .Values.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: krateo-alert-troubleshooter
+  name: krateo-alert-provider
   namespace: krateo-system
 rules:
+  # the handler opens Incidents for firing alerts, counts firings and writes the RCA
   - apiGroups: ["observability.krateo.io"]
-    resources: ["troubleshootingreports", "troubleshootingreports/status"]
+    resources: ["incidents", "incidents/status"]
     verbs: ["create", "get", "list", "patch", "update"]
   # the reconciler reads Alert CRs (desired), seeds defaults, and writes their status
   - apiGroups: ["observability.krateo.io"]
     resources: ["alerts", "alerts/status"]
     verbs: ["get", "list", "watch", "create", "patch", "update"]
-  # the key-bootstrap Job (same SA) writes the hyperdx-api-token Secret
+  # the key-bootstrap Job (same SA) writes the hyperdx-api-token Secret; the comparison reads a
+  # ModelConfig's apiKeySecret
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create", "get", "patch", "update"]
+  # the comparison resolves its model from config.compareModelConfig
+  - apiGroups: ["kagent.dev"]
+    resources: ["modelconfigs"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: krateo-alert-troubleshooter
+  name: krateo-alert-provider
   namespace: krateo-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: krateo-alert-troubleshooter
+  name: krateo-alert-provider
 subjects:
   - kind: ServiceAccount
-    name: krateo-alert-troubleshooter
+    name: krateo-alert-provider
     namespace: krateo-system
 ---
-# The observer (a thread in the handler image) correlates AuditRecords -> TroubleshootingReport
-# remediation steps CLUSTER-WIDE: a remediation write can target any namespace and its AuditRecord
-# lives next to the target object (observer.py AUDIT_NAMESPACE/REPORT_NAMESPACE default ""=all-ns), so
-# it LISTs auditrecords + troubleshootingreports across all namespaces and PATCHes report status in the
-# report's own namespace. A namespaced Role cannot authorize an all-namespaces list, so this needs a
-# ClusterRole. It now also carries the cluster-wide READ the RCA itself needs (see the rules below).
-# The namespaced Role above still covers the handler/reconciler's in-namespace writes (create reports,
-# alerts, the hyperdx-token Secret).
+# The cluster-wide READ of the analyzer identity, group krateo:alert-provider: the RCA's k8s
+# tool calls. The namespaced Role above covers the pod's own writes (incidents, alerts, the
+# hyperdx-token Secret).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: krateo-alert-troubleshooter-observer
+  name: krateo-alert-provider-observer
 rules:
   # CLUSTER-WIDE READ. The RCA is asked to explain arbitrary cluster failures, so it must be able to
   # READ arbitrary cluster objects. Without this it could read nothing but its own CRDs, and every
@@ -72,55 +78,47 @@ rules:
   #
   # It does include secrets cluster-wide, which is the honest cost of "read everything". The
   # mitigating control is on the LLM path, not here: the agentgateway promptGuard masks key material
-  # and connection strings before anything reaches a model. Both subjects below are this one
-  # non-user-facing analyzer, reached by its two paths (in-process SA, replayed cert).
+  # and connection strings before anything reaches a model. The subject below is this one
+  # non-user-facing analyzer.
   - apiGroups: ["*"]
     resources: ["*"]
     verbs: ["get", "list", "watch"]
   - nonResourceURLs: ["*"]
     verbs: ["get"]
-  # The wildcard above is read-only, so the report status WRITE still needs naming explicitly.
-  - apiGroups: ["observability.krateo.io"]
-    resources: ["troubleshootingreports", "troubleshootingreports/status"]
-    verbs: ["patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: krateo-alert-troubleshooter-observer
+  name: krateo-alert-provider-observer
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: krateo-alert-troubleshooter-observer
+  name: krateo-alert-provider-observer
 subjects:
-  # The in-process observer thread, which talks to the apiserver with the pod's own SA token.
-  - kind: ServiceAccount
-    name: krateo-alert-troubleshooter
-    namespace: krateo-system
   # The RCA's k8s tool calls, which do NOT arrive as this ServiceAccount. incident-agent runs them
   # through the agentgateway cert-replay hop: it swaps the caller's authn JWT for the client cert in
   # <user>-clientconfig, so the apiserver sees that cert's CN as the User and its O= entries as Groups.
-  # The cert carries O=krateo:alert-troubleshooter (serviceaccount-authn.yaml spec.groups), never
+  # The cert carries O=krateo:alert-provider (serviceaccount-authn.yaml spec.groups), never
   # system:serviceaccount:..., so only a Group subject authorizes the read granted above.
   - kind: Group
-    name: krateo:alert-troubleshooter
+    name: krateo:alert-provider
     apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: krateo-alert-troubleshooter
+  name: krateo-alert-provider
   namespace: krateo-system
-  labels: { app: krateo-alert-troubleshooter }
+  labels: { app: krateo-alert-provider }
 spec:
   replicas: 1
   selector:
-    matchLabels: { app: krateo-alert-troubleshooter }
+    matchLabels: { app: krateo-alert-provider }
   template:
     metadata:
-      labels: { app: krateo-alert-troubleshooter }
+      labels: { app: krateo-alert-provider }
     spec:
-      serviceAccountName: krateo-alert-troubleshooter
+      serviceAccountName: krateo-alert-provider
       securityContext:
         seccompProfile: { type: RuntimeDefault }
       volumes:
@@ -142,20 +140,25 @@ spec:
             - containerPort: 8080
           env:
             # All runtime config is overridable via values.config.* (installer:
-            # componentValues.alert-troubleshooter.config.*); defaults live in values.yaml and match the
-            # in-cluster krateo-system layout. NAMESPACE is the release namespace (where reports are created).
+            # componentValues.alert-provider.config.*); defaults live in values.yaml and match the
+            # in-cluster krateo-system layout. NAMESPACE is the release namespace (its Alerts and Incidents).
             - name: NAMESPACE
               value: {{ .Release.Namespace | quote }}
             - name: AUTOPILOT_A2A_URL
               value: {{ .Values.config.autopilotA2aUrl | quote }}
+            # The agent that judges whether a firing is the problem an open incident describes.
+            - name: COMPARE_MODEL_CONFIG
+              value: {{ .Values.config.compareModelConfig | quote }}
+            - name: MAX_COMPARE_CANDIDATES
+              value: {{ .Values.config.maxCompareCandidates | quote }}
+            - name: FAILED_ANALYSIS_HOLD
+              value: {{ .Values.config.failedAnalysisHold | quote }}
             # Intra-service auth (Option A): when set, the handler exchanges the projected SA token
             # (audience "authn", mounted below) at <authnUrl>/serviceaccount/login for a Krateo JWT and
-            # presents it on the A2A call so incident-agent can reach its agentgateway-gated MCP tools.
+            # presents it on the A2A calls (the RCA and the comparisons), so the gated agents accept them.
             # Empty (default) = unauthenticated A2A, exactly as before (older clusters with no gateway).
             - name: AUTHN_URL
               value: {{ .Values.config.authnUrl | quote }}
-            - name: REPORT_COOLDOWN
-              value: {{ .Values.config.reportCooldown | quote }}     # dedup window (s): don't re-analyze the same alert within this
             # --- reconciler (Alert CRs -> HyperDX v2 external API, Bearer auth) ---
             - name: HYPERDX_API_URL
               value: {{ .Values.config.hyperdxApiUrl | quote }}
@@ -190,13 +193,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: krateo-alert-troubleshooter
+  name: krateo-alert-provider
   namespace: krateo-system
 spec:
   # Headless: this bench cluster's ClusterIP range is exhausted; a headless service still
-  # resolves krateo-alert-troubleshooter.krateo-system.svc → the pod IP for HyperDX's webhook POST.
+  # resolves krateo-alert-provider.krateo-system.svc → the pod IP for HyperDX's webhook POST.
   clusterIP: None
-  selector: { app: krateo-alert-troubleshooter }
+  selector: { app: krateo-alert-provider }
   ports:
     - port: 8080
       targetPort: 8080

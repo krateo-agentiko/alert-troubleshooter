@@ -1,2 +1,0 @@
-# Default values for alert-troubleshooter-crds (the dedicated CRD chart).
-# The CRDs are static; there are no tunable values.

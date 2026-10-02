@@ -1,4 +1,4 @@
-alert-troubleshooter {{ .Chart.AppVersion }} installed in {{ .Release.Namespace }}.
+alert-provider {{ .Chart.AppVersion }} installed in {{ .Release.Namespace }}.
 
 Default alerts seeded into HyperDX (config.defaultAlerts) — each firing auto-launches an
 incident-agent root-cause analysis:
