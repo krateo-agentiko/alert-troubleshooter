@@ -9,7 +9,8 @@ Runs as a background thread in the krateo-alert-provider process:
         being deleted (deletionTimestamp) -> delete its HyperDX alert+dashboard, drop the finalizer
         else, no status.hyperdxAlertId    -> create dashboard-tile + alert, record ids in status
         else                              -> mirror the live alert state (OK/ALERT/PENDING) to status
-        live state ALERT                  -> a firing: handler.fire, off the reconcile thread
+        live state ALERT                  -> a firing: handler.fire, off the reconcile thread,
+                                             unless the CR is paused (krateo.io/paused: "true")
     (a finalizer on each CR guarantees the HyperDX resources are removed before the CR is deleted)
 
 Each HyperDX alert is named after its CR's metadata.name.
@@ -45,6 +46,14 @@ WEBHOOK_TARGET = os.environ.get(
 DEFAULT_ALERTS_JSON = os.environ.get("DEFAULT_ALERTS_JSON", "")
 # Added to each Alert CR so its HyperDX alert+dashboard are removed before the CR is deleted.
 FINALIZER = "observability.krateo.io/hyperdx-cleanup"
+# provider-runtime's pause annotation. On an Alert it stops only the firings: the spec is still
+# pushed to HyperDX and its state still mirrored.
+PAUSED = "krateo.io/paused"
+
+
+def paused(cr):
+    """Whether the CR's firings are skipped: no incident opens and none is counted."""
+    return (cr["metadata"].get("annotations") or {}).get(PAUSED) == "true"
 
 
 def seed_default_alerts():
@@ -371,7 +380,11 @@ def reconcile_once(hdx):
                 continue
             _ensure_finalizer(cr)       # guard the CR so its HyperDX resources are cleaned on delete
             if _reconcile_cr(hdx, cr, source, webhook_id) == "ALERT":
-                _start_firing(hdx, source, cr)
+                if paused(cr):
+                    print(f"[reconciler] Alert {cr['metadata']['name']} is paused; firing skipped",
+                          flush=True)
+                else:
+                    _start_firing(hdx, source, cr)
         except requests.HTTPError:
             raise  # bubble 401/session issues to the loop for re-login
         except Exception as e:  # noqa: BLE001 — one bad CR shouldn't stall the rest

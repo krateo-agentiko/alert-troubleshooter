@@ -8,7 +8,7 @@ timestamp: 2026-08-20T00:00:00Z
 
 # API
 
-- **`Alert`** (`observability.krateo.io/v1alpha1`) — the inbound alert shape (see `crds/crd.alert.yaml`). `spec.where` is the ClickHouse SQL whose rows HyperDX counts. `status.state` mirrors HyperDX; `status.okSince` is when it last turned OK, unset while it is anything else (display only).
+- **`Alert`** (`observability.krateo.io/v1alpha1`) — the inbound alert shape (see `crds/crd.alert.yaml`). `spec.where` is the ClickHouse SQL whose rows HyperDX counts. `status.state` mirrors HyperDX; `status.okSince` is when it last turned OK, unset while it is anything else (display only). The annotation `krateo.io/paused: "true"` skips its firings (see [usage](usage.md#pause-an-alert)).
 - **`Incident`** (`observability.krateo.io/v1alpha1`) — written here, owned by incident-controller, whose chart ships the CRD. The handler creates `<alert>-<yyyymmdd-hhmmss>` with the label `observability.krateo.io/alert` and `spec.alertRef`, `trigger`, `prompt`, `triggeredAt`, and writes status `state` (`Analyzing`, then `Open`), `firings`, `lastFiredAt`, `howToFix`, `error`, `completedAt` and the analysis fields below. It also counts firings (`firings`, `lastFiredAt`) on a `Resolved` incident for one `spec.interval` after its `resolution.at`. See [overview](overview.md#incidents).
 
 HTTP: `POST /webhook` (acked 202); `GET /healthz`. The webhook body is

@@ -22,6 +22,22 @@ pass (60 s) that finds a HyperDX alert ALERT is a firing of its CR. Each firing 
 logged and lost. Comparing a firing with the alert's open incidents is one call to the model of the kagent
 ModelConfig `config.compareModelConfig`.
 
+## Pause an alert
+
+`krateo.io/paused: "true"` on an `Alert` skips its firings: no incident opens and no firing is
+counted, so no comparison or RCA runs. The reconciler still pushes the spec to HyperDX and mirrors
+its state, so a paused alert can be corrected and watched before it is resumed. Incidents already
+open keep their checks, and an RCA already running finishes. Any other value, or no annotation,
+resumes it on the next pass.
+
+```sh
+kubectl annotate alert <name> -n krateo-system krateo.io/paused=true --overwrite
+kubectl annotate alert <name> -n krateo-system krateo.io/paused-
+```
+
+The portal's Pause and Resume buttons write the same annotation with the user's token, so they need
+`patch` on `alerts.observability.krateo.io`.
+
 ## Who can see alerts
 
 The portal reads `Alert` CRs with the signed-in user's own token. The chart ships the ClusterRole
