@@ -301,6 +301,45 @@ class TestTheReconcilerFiresAlertingCRs(unittest.TestCase):
         self.assertEqual((h.fired, h.status(K)["phase"]), ([], "Invalid"))
 
 
+class TestAPausedCRNeverFires(unittest.TestCase):
+    """krateo.io/paused: "true" skips the firing; the CR is still synced and its state mirrored."""
+
+    def _alerting(self, annotations):
+        api = FakeHyperDXAPI()
+        cr = _alert_cr(K, "where-k")
+        cr["metadata"]["annotations"] = annotations
+        h = ReconcilerHarness([cr])
+        hdx = _client(api)
+        h.r.reconcile_once(hdx)
+        api.alerts[h.status(K)["hyperdxAlertId"]]["state"] = "ALERT"
+        return api, h, hdx
+
+    def test_a_paused_CR_is_mirrored_but_does_not_fire(self):
+        api, h, hdx = self._alerting({"krateo.io/paused": "true"})
+        h.r.reconcile_once(hdx)
+        self.assertEqual((h.fired, h.status(K)["state"], h.status(K)["phase"]),
+                         ([], "ALERT", "Synced"))
+
+    def test_a_paused_CR_still_gets_its_spec_pushed(self):
+        api, h, hdx = self._alerting({"krateo.io/paused": "true"})
+        h.crs[K]["spec"]["threshold"] = 5
+        h.r.reconcile_once(hdx)
+        self.assertEqual(api.alerts[h.status(K)["hyperdxAlertId"]]["threshold"], 5)
+        self.assertEqual(h.fired, [])
+
+    def test_only_true_pauses(self):
+        api, h, hdx = self._alerting({"krateo.io/paused": "false"})
+        h.r.reconcile_once(hdx)
+        self.assertEqual(h.fired, [K])
+
+    def test_resuming_fires_on_the_next_pass(self):
+        api, h, hdx = self._alerting({"krateo.io/paused": "true"})
+        h.r.reconcile_once(hdx)
+        h.crs[K]["metadata"]["annotations"] = {}
+        h.r.reconcile_once(hdx)
+        self.assertEqual(h.fired, [K])
+
+
 class TestEachCRLabelsItsOwnIncidents(unittest.TestCase):
     """Bugs #3 and #4: a substring match tied a firing to the wrong Alert, and same-named Alerts
     shared one record. A firing is its CR's, and each Alert labels its own incidents."""
