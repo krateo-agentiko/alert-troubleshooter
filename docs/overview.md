@@ -98,16 +98,14 @@ state but `Resolved` and `Closed`. For each firing, `handler.fire`:
 - The records are the alert's `where` rows over one `spec.interval`, from HyperDX's
   `/api/v2/charts/series` grouped by `compare.ROW_GROUP`: a line per distinct record (a k8s
   event's object, reason and message; any other log's service and pod), with its
-  count, the 20 most frequent quoted.
+  count, the 20 most frequent quoted. No row is no verdict: HyperDX's `ALERT` comes from its last
+  evaluation, and the window read later can have aged past every row.
 - The answer is `{"match": <incident number> | null, "reason": "…"}`: the newest incident whose
   root cause produces any of the records, or null for none. The prompt numbers the incidents
   rather than naming them, because the gateway's PhoneNumber guard masks the timestamp in a name.
   A failed or timed-out call, a 429, or an answer whose `match` is not null or a candidate's
   number is no verdict.
-- Behind the agentgateway, agentgateway-policies routes requests carrying the header to its
-  `incidentCompare` route, whose rate limit bounds these calls. Its 429 is no verdict, so the
-  limit delays a new incident and never opens an extra one.
-- A firing alert with K analyzed open incidents costs up to K calls per pass.
+- A firing alert costs at most one call per pass, whatever the number of its open incidents.
 
 ## Alert status
 

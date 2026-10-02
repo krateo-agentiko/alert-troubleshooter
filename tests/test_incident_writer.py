@@ -199,6 +199,22 @@ class TestOpeningPolicy(WriterCase):
         self.assertEqual((self.compared, self.rca), ([], []))
         self.assertEqual(self.k8s.only()["status"]["firings"], 1)
 
+    def test_no_matching_records_are_no_verdict(self):
+        self.analyzed(f"{ALERT}-x")
+        self.records = []
+        self.fire()
+        self.assertEqual((self.compared, self.rca, len(self.k8s.incidents)), ([], [], 1))
+        self.assertEqual(self.k8s.only()["status"]["firings"], 1)
+
+    def test_no_matching_records_still_count_on_an_incident_without_an_analysis(self):
+        self.analyzed(f"{ALERT}-x", created="2026-09-25T09:00:00Z")
+        self.k8s.put(NS, f"{ALERT}-a", ALERT, state="Analyzing")
+        self.records = []
+        self.fire()
+        self.assertEqual(self.compared, [])
+        self.assertEqual(self.k8s.incidents[(NS, f"{ALERT}-a")]["status"]["firings"], 2)
+        self.assertEqual(len(self.k8s.incidents), 2)
+
     def test_records_are_not_read_with_nothing_to_compare(self):
         self.fire()
         self.assertEqual((self.record_reads, len(self.rca)), ([], 1))

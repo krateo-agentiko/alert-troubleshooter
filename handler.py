@@ -575,9 +575,14 @@ def fire(alert, records=None):
 
     def rows():
         try:
-            return records(spec.get("where") or "", grace)
+            found = records(spec.get("where") or "", grace)
         except Exception as e:  # noqa: BLE001 — without the records there is no comparison
             raise compare.NoVerdict(f"the alert's records are unreadable: {str(e)[:200]}") from e
+        # HyperDX's ALERT is from its last evaluation; by now the window can hold no row, and a
+        # comparison over no records names no incident, which would open a duplicate.
+        if not found:
+            raise compare.NoVerdict("no record matches the alert now")
+        return found
     try:
         created = _open_or_count(ns, alert, prompt, datetime.now(timezone.utc), grace, rows)
     except compare.NoVerdict as e:

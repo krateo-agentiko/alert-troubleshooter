@@ -21,7 +21,7 @@ pass fires alerts.
 `compare.py` holds both sides of it. Each firing is one OpenAI chat-completions call
 (`<baseUrl>/chat/completions`) on the model of the ModelConfig `config.compareModelConfig`, with
 `compare.SYSTEM` and the prompt. The answer is one object `{"match": <incident number> | null,
-"reason": "<one sentence>"}`, the number in prompt order. Anything else, a failed call, or a 429 is no verdict. See
+"reason": "<one sentence>"}`, the number in prompt order. Anything else, a failed call, a 429, or no record matching the alert is no verdict. See
 [overview](overview.md#incident-comparison).
 
 ## RCA output contract
