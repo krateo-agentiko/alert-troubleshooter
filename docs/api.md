@@ -56,7 +56,7 @@ Apply button sends it as the person who clicks, with their RBAC, then sets `spec
 | Field | Value |
 |---|---|
 | `verb` | `patch` (payload is a JSON merge patch), `create` (payload is the whole object) or `delete` (no payload) |
-| `apiVersion`, `resource` | the target's `v1` or `<group>/<version>`, and its lowercase plural |
+| `apiVersion`, `resource` | the target's `v1` or `<group>/<version>` (a Krateo composition's version is dashed, `v1-12-36`), and its lowercase plural |
 | `namespace`, `name` | the target; `namespace` is absent for a cluster-scoped object |
 | `payload` | an object; for `create` its apiVersion and metadata match the target |
 

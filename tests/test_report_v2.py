@@ -265,6 +265,20 @@ class TestHowToFix(unittest.TestCase):
                 self.assertEqual(self._parse({**FIX, "applyAction": action})["howToFix"]["applyAction"],
                                  action)
 
+    def test_a_composition_patch_with_a_dashed_version_is_kept(self):
+        """A Krateo composition's version is its chart's version with dashes, so the fix that
+        patches a composition's spec names composition.krateo.io/v1-12-36."""
+        action = {"verb": "patch", "apiVersion": "composition.krateo.io/v1-12-36",
+                  "resource": "webapps", "namespace": "team-a", "name": "web",
+                  "payload": {"spec": {"replicaCount": 3}}}
+        self.assertEqual(self._parse({**FIX, "applyAction": action})["howToFix"]["applyAction"],
+                         action)
+        for bad in ("composition.krateo.io/v1-", "composition.krateo.io/v1--2",
+                    "composition.krateo.io/1-12-36"):
+            with self.subTest(apiVersion=bad):
+                v2 = self._parse({**FIX, "applyAction": {**action, "apiVersion": bad}})
+                self.assertNotIn("applyAction", v2["howToFix"])
+
     def test_a_cluster_scoped_action_has_no_namespace(self):
         action = {"verb": "patch", "apiVersion": "rbac.authorization.k8s.io/v1",
                   "resource": "clusterroles", "namespace": "", "name": "viewer",
