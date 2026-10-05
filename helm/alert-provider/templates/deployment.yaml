@@ -104,6 +104,53 @@ subjects:
     name: krateo:alert-provider
     apiGroup: rbac.authorization.k8s.io
 ---
+# The pod's own reads behind a fix's target (composition_fix.py): the object a howToFix writes, up
+# its ownerReferences (Pod -> ReplicaSet -> Deployment) to the one the composition controller
+# labels krateo.io/composition-id, then that composition and its CRD's spec schema. GET only, and
+# never Secrets: the kinds composition_fix.BUILTIN names.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: krateo-alert-provider-fix-owner
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "serviceaccounts", "persistentvolumeclaims"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get"]
+  - apiGroups: ["composition.krateo.io"]
+    resources: ["*"]
+    verbs: ["get"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: krateo-alert-provider-fix-owner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: krateo-alert-provider-fix-owner
+subjects:
+  - kind: ServiceAccount
+    name: krateo-alert-provider
+    namespace: krateo-system
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -25,3 +25,6 @@ timestamp: 2026-08-20T00:00:00Z
 ## 2026-10-01
 - A comparison weighs the 50 newest open analyzed incidents, set by `config.maxCompareCandidates`.
 - An incident whose RCA failed takes its alert's firings for `config.failedAnalysisHold` (1800 s) after the failure, then no more: the next firing nothing else covers opens a new incident with a fresh RCA. An interrupted RCA stamps `completedAt` too.
+
+## 2026-10-05
+- A `howToFix` that writes an object a Krateo composition renders (labelled `krateo.io/composition-id`, a Pod through its owners) is retargeted at the composition: one follow-up on the incident's thread picks the spec value, and apply, rollback and applyAction merge-patch that one top-level key of the composition's spec. An unusable pick keeps the fix, saying the composition reverts it. The RCA prompt says so too. A composition's dashed `apiVersion` (`composition.krateo.io/v1-12-36`) is a valid applyAction. The chart's ClusterRole `krateo-alert-provider-fix-owner` lets the pod get the workload kinds, compositions and their CRDs.

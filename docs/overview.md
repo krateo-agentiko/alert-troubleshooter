@@ -65,8 +65,10 @@ state but `Resolved` and `Closed`. For each firing, `handler.fire`:
 6. otherwise creates `<alert>-<yyyymmdd-hhmmss>` (the firing's UTC time) with the label and
    `spec.alertRef`, `trigger: alert`, `prompt` and `triggeredAt`, in state `Analyzing` with
    `firings: 1`;
-7. runs the RCA on the incident's own kagent thread (contextId = uuid5 of its name), then writes
-   the analysis, `howToFix` and `state: Open` in one status write.
+7. runs the RCA on the incident's own kagent thread (contextId = uuid5 of its name), retargets a
+   `howToFix` that writes an object a composition renders at the composition's spec (one
+   follow-up on the same thread, see [api](api.md#a-fix-for-an-object-a-composition-renders)),
+   then writes the analysis, `howToFix` and `state: Open` in one status write.
 
 - One evaluation per alert runs at a time: while one is still comparing, the alert's next firing
   is skipped. The RCA runs after that evaluation ends, and its incident takes the firings that

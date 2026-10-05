@@ -15,6 +15,7 @@ no {"match": number|null} object), nothing; else a new <alert>-<yyyymmdd-hhmmss>
 -> Open, error set when it has no howToFix).
 compare.py: the comparison's system prompt, prompt, record grouping + verdict parser.
 
+composition_fix.py: a howToFix that writes an object a composition renders (krateo.io/composition-id, Pods via ownerReferences) becomes a merge patch of one top-level key of the composition's spec, picked by a follow-up on the incident's thread and checked against the CRD's spec schema; else the fix is kept with a "the composition reverts it" warning.
 docs/overview.md: architecture
 docs/usage.md: install + wire the webhook
 docs/configuration.md: image + runtime env

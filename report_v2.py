@@ -45,7 +45,9 @@ HOW_TO_FIX_ACTION = "applyAction"
 ACTION_VERBS = ("patch", "create", "delete")
 # Deleting one of these takes everything under it along (the scripts' rule, too).
 ACTION_NEVER_DELETE = ("namespaces", "nodes", "customresourcedefinitions")
-_API_VERSION_RE = re.compile(r"^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?v[0-9]+((alpha|beta)[0-9]+)?$")
+# A Krateo composition's version is its chart's, dashed: composition.krateo.io/v1-12-36.
+_API_VERSION_RE = re.compile(
+    r"^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?v[0-9]+((alpha|beta)[0-9]+|(-[0-9]+)+)?$")
 _RESOURCE_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 _NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
 
@@ -139,6 +141,13 @@ apply. Nothing else runs automatically.
   tag, narrow an Alert's where, delete a stuck object), apply makes it; an apply that only reads is
   a MISS. Only when you genuinely cannot determine a safe write does apply hold comments alone,
   saying what a human must decide, with the reason in missingContext.
+- A RESOURCE A COMPOSITION MANAGES IS FIXED THROUGH THE COMPOSITION'S VALUES, never by patching
+  the managed object. The composition controller renders every object labelled
+  krateo.io/composition-id (a Pod through the workload that owns it) from its composition's spec,
+  and reverts any other change on its next reconcile. So read that composition (group
+  composition.krateo.io, named by the object's krateo.io/composition-* labels): apply and rollback
+  merge-patch one top-level key of its spec, a nested change carrying that key's whole value as
+  you read it with the one field changed, and verify still tests the workload's recovery.
 - VERIFY IT EXISTS: every object a script names is one you read this run. If a workload you would
   fix is missing, do not create or provision it in apply; report it in missingContext.
 - ROLLBACK undoes apply: it restores what apply changed to the values you read this run (the

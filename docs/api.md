@@ -64,6 +64,30 @@ The parser keeps it only alongside the three scripts. One that is malformed, del
 Node or CustomResourceDefinition, or carries a payload over 16384 characters is left out alone,
 and `missingContext` says so.
 
+### A fix for an object a composition renders
+
+The composition-dynamic-controller renders each object of a composition from the composition's
+spec, labels it `krateo.io/composition-id` (the composition's uid) and reverts any other change
+to it on its next reconcile. Before writing `howToFix`, the handler (`composition_fix.py`) reads
+the object the applyAction or an apply `kubectl` write (patch, set, scale, label, annotate, edit,
+replace) targets and walks its controller `ownerReferences` (Pod → ReplicaSet → Deployment) to
+the first labelled one. The composition (group `composition.krateo.io`) is named by its
+`krateo.io/composition-*` labels, or else its Helm release annotations, and confirmed by uid. A
+delete, a create and a rollout restart are not retargeted: the controller recreates what they
+remove.
+
+For such an object the handler asks the RCA agent, on the incident's thread, which value of the
+composition's spec renders the broken field, giving it the composition's current spec and the
+spec's JSON schema from its CRD at the composition's version. The answer is
+`{"path": [<spec key>, ...], "value": ...}`. When the path's top-level key is in the schema or the
+spec, and every step below it is a field the schema declares (or sits under one that keeps unknown
+fields), `apply`, `rollback` and `applyAction` become a merge patch of that one top-level key: its
+whole current value (or its schema default when unset) with the one field changed, against
+`<plural>.<version>.composition.krateo.io`; rollback restores the value read. `precondition` and
+`verify` are kept: they test the workload's recovery. Any other answer keeps the fix as written,
+with a warning line in apply and rollback and a `missingContext` line that name the composition
+and say it reverts the change.
+
 The handler writes the `V2_STATUS_KEYS` onto the Incident. The parser's `evidence` (the
 retrieval ledger behind the confidence cap) is not stored; its sentence is already in the report
 and `missingContext`.

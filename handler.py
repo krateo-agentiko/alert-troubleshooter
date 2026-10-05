@@ -21,6 +21,7 @@ from urllib.parse import quote
 import requests
 
 import compare  # the incident-comparison contract: prompt + verdict parser
+import composition_fix  # a fix for a composition's object goes through the composition's values
 import report_v2  # the structured-report contract: prompt instructions + defensive parser
 
 # --- config (env, with in-cluster defaults) ---
@@ -613,6 +614,8 @@ def run_analysis(ns, name, prompt):
         if prose.strip():
             status["report"] = prose
         status.update({k: v2[k] for k in report_v2.V2_STATUS_KEYS if k in v2})
+        if "howToFix" in status:
+            _fix_through_composition(ns, name, status)
         if "howToFix" in v2:
             status["error"] = None
         elif not prose.strip() and not v2:
@@ -632,6 +635,128 @@ def run_analysis(ns, name, prompt):
               f"(howToFix={'yes' if status.get('howToFix') else 'no'})", flush=True)
     except Exception as e:  # noqa: BLE001 — recover_interrupted opens it after a restart
         print(f"[err] incident {ns}/{name}: analysis not written ({e})", flush=True)
+
+
+def _object_path(api_version, plural, ns, name):
+    base = f"/api/{api_version}" if "/" not in api_version else f"/apis/{api_version}"
+    return f"{base}/namespaces/{ns}/{plural}/{name}" if ns else f"{base}/{plural}/{name}"
+
+
+def _labelled(api_version, plural, ns, name, hops=4):
+    """The object at the path, or the first object up its controller ownerReferences that carries
+    krateo.io/composition-id (a Pod -> ReplicaSet -> Deployment), or None."""
+    obj = _k8s("GET", _object_path(api_version, plural, ns, name))
+    for _ in range(hops):
+        if composition_fix.label_ref(obj):
+            return obj
+        owner = composition_fix.controller_owner(obj)
+        if not owner:
+            return None
+        api_version, plural, name = owner
+        obj = _k8s("GET", _object_path(api_version, plural, ns, name))
+    return obj if composition_fix.label_ref(obj) else None
+
+
+def _get_or_none(path):
+    try:
+        return _k8s("GET", path)
+    except requests.HTTPError as e:
+        if _http_status(e) == 404:
+            return None
+        raise
+
+
+def _composition_of(obj):
+    """(composition, plural) whose uid the CDC's krateo.io/composition-id label on `obj` names, or
+    None. The other krateo.io/composition-* labels name it; the uid confirms it. Without them, the
+    Helm release annotations name it, and every kind of the group is tried at every served version."""
+    ref = composition_fix.label_ref(obj)
+    if not ref:
+        return None
+    group, version, plural, ns, name, uid = ref
+    if group != composition_fix.GROUP or not name:
+        return None
+    if plural and version:
+        found = _get_or_none(f"/apis/{group}/{version}/namespaces/{ns}/{plural}/{name}")
+        if found and found["metadata"].get("uid") == uid:
+            return found, plural
+    for gv in (_k8s("GET", f"/apis/{group}").get("versions") or []):
+        for res in (_k8s("GET", f"/apis/{gv['groupVersion']}").get("resources") or []):
+            if "/" in res["name"] or (plural and res["name"] != plural):
+                continue
+            found = _get_or_none(f"/apis/{gv['groupVersion']}/namespaces/{ns}/{res['name']}/{name}")
+            if found and found["metadata"].get("uid") == uid:
+                return found, res["name"]
+    return None
+
+
+def _spec_schema(composition, plural):
+    """The JSON schema of the composition's spec at its version, from its CRD, or None."""
+    version = composition["apiVersion"].partition("/")[2]
+    try:
+        crd = _k8s("GET", "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/"
+                          f"{plural}.{composition_fix.GROUP}")
+    except Exception as e:  # noqa: BLE001 — the model then picks from the spec alone
+        print(f"[fix] {plural}.{composition_fix.GROUP}: no schema ({e})", flush=True)
+        return None
+    for v in (crd.get("spec") or {}).get("versions") or []:
+        if v.get("name") == version:
+            return (((v.get("schema") or {}).get("openAPIV3Schema") or {}).get("properties")
+                    or {}).get("spec")
+    return None
+
+
+def _fix_through_composition(ns, name, status):
+    """Retarget status.howToFix at the composition when the object it writes is one a composition
+    renders, in place. The RCA agent picks, on the incident's thread, the composition's spec value
+    that renders the broken field; composition_fix.retarget builds the merge patch of that one
+    top-level key. An unusable pick keeps the fix as it was, saying in the scripts and in
+    missingContext that the composition reverts it. Never raises: the fix as written stays."""
+    how = status["howToFix"]
+    try:
+        for target in composition_fix.written_targets(how):
+            try:
+                managed = _labelled(*target)
+                owned = managed and _composition_of(managed)
+            except Exception as e:  # noqa: BLE001 — an unreadable target is not known to be managed
+                print(f"[fix] {ns}/{name}: {'/'.join(target)}: ownership unread ({str(e)[:200]})",
+                      flush=True)
+                continue
+            if owned:
+                break
+        else:
+            return
+        composition, plural = owned
+        try:
+            parent = _composition_of(composition)
+        except Exception:  # noqa: BLE001 — the parent only adds a line to the prompt
+            parent = None
+        schema = _spec_schema(composition, plural)
+        prompt = composition_fix.build_prompt(managed, composition, schema, how,
+                                              parent and parent[0])
+        print(f"[fix] {ns}/{name}: {composition_fix.describe(managed)} is rendered by "
+              f"{composition_fix.describe(composition)}; asking for its spec value", flush=True)
+        try:
+            with _analysis_slots:
+                raw, _ = a2a_analyze(prompt, _context_id(name))
+            path, value, reason = composition_fix.parse_choice(raw)
+            fixed, why = composition_fix.retarget(how, managed, composition, plural, schema,
+                                                  path, value, reason)
+        except composition_fix.NoChoice as e:
+            fixed, why = None, str(e)
+        except Exception as e:  # noqa: BLE001 — the follow-up failed; say the fix is reverted
+            fixed, why = None, f"the follow-up analysis failed: {str(e)[:200]}"
+        if fixed:
+            status["howToFix"] = fixed
+            print(f"[fix] {ns}/{name}: retargeted at {composition_fix.describe(composition)}",
+                  flush=True)
+            return
+        status["howToFix"] = composition_fix.reverted(how, managed, composition)
+        status["missingContext"] = (status.get("missingContext") or [])[:63] + [
+            composition_fix.reverted_note(managed, composition, why)]
+        print(f"[fix] {ns}/{name}: kept on {composition_fix.describe(managed)} ({why})", flush=True)
+    except Exception as e:  # noqa: BLE001 — the fix as written stays
+        print(f"[fix] {ns}/{name}: not retargeted ({str(e)[:200]})", flush=True)
 
 
 class Handler(BaseHTTPRequestHandler):
