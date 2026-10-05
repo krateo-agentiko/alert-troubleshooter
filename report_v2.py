@@ -45,7 +45,9 @@ HOW_TO_FIX_ACTION = "applyAction"
 ACTION_VERBS = ("patch", "create", "delete")
 # Deleting one of these takes everything under it along (the scripts' rule, too).
 ACTION_NEVER_DELETE = ("namespaces", "nodes", "customresourcedefinitions")
-_API_VERSION_RE = re.compile(r"^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?v[0-9]+((alpha|beta)[0-9]+)?$")
+# A Krateo composition's version is its chart's, dashed: composition.krateo.io/v1-12-36.
+_API_VERSION_RE = re.compile(
+    r"^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?v[0-9]+((alpha|beta)[0-9]+|(-[0-9]+)+)?$")
 _RESOURCE_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 _NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
 
