@@ -288,8 +288,9 @@ def _reconcile_cr(hdx, cr, source, webhook_id):
                                  "lastSyncedAt": _now()})
             print(f"[reconciler] Alert {name}: spec push failed, phase=SpecDrift ({e})", flush=True)
             return st
+        # error: None clears a SpecDrift's message once a push succeeds.
         _patch_status(name, {**ids, "state": st, "okSince": _ok_since(status, st),
-                             "phase": "Synced", "lastSyncedAt": _now()})
+                             "phase": "Synced", "error": None, "lastSyncedAt": _now()})
         if changed:
             print(f"[reconciler] Alert {name}: pushed {', '.join(changed)} to hyperdx {alert['id']}", flush=True)
         return st

@@ -25,3 +25,7 @@ timestamp: 2026-08-20T00:00:00Z
 ## 2026-10-01
 - A comparison weighs the 50 newest open analyzed incidents, set by `config.maxCompareCandidates`.
 - An incident whose RCA failed takes its alert's firings for `config.failedAnalysisHold` (1800 s) after the failure, then no more: the next firing nothing else covers opens a new incident with a fresh RCA. An interrupted RCA stamps `completedAt` too.
+
+## 2026-10-05
+- The seeded `krateo-composition-reconcile-error` excludes `incident-controller`: its own "Reconciler error" lines are about Incidents, and on krateo-057 they were ~21k rows a day that kept the alert firing every minute. Seeding only creates an absent Alert, so an existing one keeps its old `where` until it is edited or deleted and reseeded.
+- An Alert whose spec push succeeds again clears the previous `SpecDrift` `error`.
