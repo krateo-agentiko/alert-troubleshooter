@@ -24,20 +24,20 @@ with open(os.path.join(HERE, "fixtures", "composition_objects.json")) as f:
     OBJECTS = json.load(f)["objects"]
 
 PRE = ("#!/usr/bin/env bash\n# Holds while web still has the 128Mi memory limit it was OOMKilled at.\n"
-       "d=$(kubectl get deployment web -n shop -o json) || exit 2\n"
+       "d=$(kubectl get deployment web -n team-a -o json) || exit 2\n"
        "jq -e '.spec.template.spec.containers[] | select(.name == \"web\")"
        " | .resources.limits.memory == \"128Mi\"' <<<\"$d\" >/dev/null\n"
        "case $? in 0) exit 1 ;; 1) exit 0 ;; *) exit 2 ;; esac\n")
 VERIFY = ("#!/usr/bin/env bash\n# Fixed once web is off the 128Mi limit and every replica is available.\n"
-          "d=$(kubectl get deployment web -n shop -o json) || exit 2\n"
+          "d=$(kubectl get deployment web -n team-a -o json) || exit 2\n"
           "jq -e '.status.availableReplicas == .spec.replicas' <<<\"$d\" >/dev/null\n"
           "case $? in 0) exit 0 ;; 1) exit 1 ;; *) exit 2 ;; esac\n")
 SET_RESOURCES = {
     "precondition": PRE, "verify": VERIFY,
     "apply": ("#!/usr/bin/env bash\n# Raise web's memory limit from 128Mi to 512Mi.\nset -euo pipefail\n"
-              "kubectl set resources deployment web -n shop -c web --limits=memory=512Mi\n"),
+              "kubectl set resources deployment web -n team-a -c web --limits=memory=512Mi\n"),
     "rollback": ("#!/usr/bin/env bash\n# Undo apply.\nset -euo pipefail\n"
-                 "kubectl set resources deployment web -n shop -c web --limits=memory=128Mi\n")}
+                 "kubectl set resources deployment web -n team-a -c web --limits=memory=128Mi\n")}
 
 
 def _path(obj):
@@ -74,7 +74,7 @@ class Api(FakeK8s):
 
 
 def report(how_to_fix):
-    block = {"sources": [{"type": "object", "ref": "pod shop/web-679dc47cb6-z72m5",
+    block = {"sources": [{"type": "object", "ref": "pod team-a/web-679dc47cb6-z72m5",
                           "excerpt": "lastState.terminated.reason: OOMKilled"}],
              "missingContext": ["the container's memory use before it was killed"],
              "rootCause": {"statement": "web is OOMKilled at its 128Mi memory limit",
@@ -119,14 +119,14 @@ class TestRetargeted(Case):
         resources = {"limits": {"memory": "512Mi"}, "requests": {"cpu": "50m", "memory": "64Mi"}}
         self.assertEqual(how["applyAction"], {
             "verb": "patch", "apiVersion": "composition.krateo.io/v1-4-2", "resource": "webapps",
-            "namespace": "shop", "name": "web", "payload": {"spec": {"resources": resources}}})
-        self.assertIn("kubectl patch webapps.v1-4-2.composition.krateo.io web -n shop --type merge",
+            "namespace": "team-a", "name": "web", "payload": {"spec": {"resources": resources}}})
+        self.assertIn("kubectl patch webapps.v1-4-2.composition.krateo.io web -n team-a --type merge",
                       how["apply"])
         self.assertIn(json.dumps({"spec": {"resources": resources}}, separators=(",", ":")),
                       how["apply"])
         self.assertIn('"limits":{"memory":"128Mi"}', how["rollback"])
         self.assertTrue(how["apply"].startswith("#!/usr/bin/env bash\n# Set spec.resources.limits"
-                                                ".memory on WebApp shop/web"))
+                                                ".memory on WebApp team-a/web"))
         # The checks still test the workload's recovery.
         self.assertEqual((how["precondition"], how["verify"]), (PRE, VERIFY))
         self.assertNotIn("error", st)
@@ -137,25 +137,25 @@ class TestRetargeted(Case):
         (_, first), (prompt, second) = self.prompts
         self.assertEqual(first, second)
         self.assertEqual(second, handler._context_id(INCIDENT))
-        self.assertIn("Deployment shop/web", prompt)
-        self.assertIn("WebApp shop/web (composition.krateo.io/v1-4-2)", prompt)
+        self.assertIn("Deployment team-a/web", prompt)
+        self.assertIn("WebApp team-a/web (composition.krateo.io/v1-4-2)", prompt)
         self.assertIn('"128Mi"', prompt)                       # the current spec
         self.assertIn('"startupProbe"', prompt)                # the v1-4-2 schema, not vacuum's
-        self.assertIn("Platform shop/platform", prompt)        # its own parent composition
+        self.assertIn("Platform team-a/platform", prompt)        # its own parent composition
         self.assertIn("kubectl set resources deployment web", prompt)
 
     def test_a_pod_is_walked_up_its_owners_to_the_labelled_deployment(self):
         how = {**SET_RESOURCES,
                "apply": ("#!/usr/bin/env bash\n# Label the pod.\nset -euo pipefail\n"
-                         "kubectl label pod web-679dc47cb6-z72m5 -n shop tier=web\n"),
+                         "kubectl label pod web-679dc47cb6-z72m5 -n team-a tier=web\n"),
                "applyAction": {"verb": "patch", "apiVersion": "v1", "resource": "pods",
-                               "namespace": "shop", "name": "web-679dc47cb6-z72m5",
+                               "namespace": "team-a", "name": "web-679dc47cb6-z72m5",
                                "payload": {"metadata": {"labels": {"tier": "web"}}}}}
         st = self.analyze(how, choice(["startupProbe", "initialDelaySeconds"], 5))
         reads = self.api.reads
-        self.assertLess(reads.index("/api/v1/namespaces/shop/pods/web-679dc47cb6-z72m5"),
-                        reads.index("/apis/apps/v1/namespaces/shop/replicasets/web-679dc47cb6"))
-        self.assertIn("/apis/apps/v1/namespaces/shop/deployments/web", reads)
+        self.assertLess(reads.index("/api/v1/namespaces/team-a/pods/web-679dc47cb6-z72m5"),
+                        reads.index("/apis/apps/v1/namespaces/team-a/replicasets/web-679dc47cb6"))
+        self.assertIn("/apis/apps/v1/namespaces/team-a/deployments/web", reads)
         # spec.startupProbe is unset: the schema's default is the value the change is made to.
         self.assertEqual(st["howToFix"]["applyAction"]["payload"], {"spec": {"startupProbe": {
             "httpGet": {"path": "/health", "port": "http"}, "periodSeconds": 1,
@@ -172,7 +172,7 @@ class TestRetargeted(Case):
         st = self.analyze(SET_RESOURCES, choice(["resources", "limits", "memory"], "512Mi"))
         self.assertEqual(st["howToFix"]["applyAction"]["resource"], "webapps")
         self.assertIn("/apis/composition.krateo.io", self.api.reads)       # discovery
-        self.assertIn("/apis/composition.krateo.io/v1-4-2/namespaces/shop/webapps/web",
+        self.assertIn("/apis/composition.krateo.io/v1-4-2/namespaces/team-a/webapps/web",
                       self.api.reads)
 
 
@@ -186,7 +186,7 @@ class TestKept(Case):
 
     def test_a_key_the_composition_does_not_have_keeps_the_fix_and_says_it_is_reverted(self):
         action = {"verb": "patch", "apiVersion": "apps/v1", "resource": "deployments",
-                  "namespace": "shop", "name": "web", "payload": {"spec": {"replicas": 3}}}
+                  "namespace": "team-a", "name": "web", "payload": {"spec": {"replicas": 3}}}
         how = {**SET_RESOURCES, "applyAction": action}
         st = self.analyze(how, choice(["memoryLimit"], "512Mi"))
         out = st["howToFix"]
@@ -195,11 +195,11 @@ class TestKept(Case):
         for script in ("apply", "rollback"):
             first, second, rest = out[script].split("\n", 2)
             self.assertEqual(first, "#!/usr/bin/env bash")
-            self.assertTrue(second.startswith("# WARNING: Deployment shop/web is rendered by the "
-                                              "composition WebApp shop/web"), second)
+            self.assertTrue(second.startswith("# WARNING: Deployment team-a/web is rendered by the "
+                                              "composition WebApp team-a/web"), second)
             self.assertEqual(f"{first}\n{rest}", how[script])
         note = st["missingContext"][-1]
-        self.assertIn("WebApp shop/web (composition.krateo.io/v1-4-2)", note)
+        self.assertIn("WebApp team-a/web (composition.krateo.io/v1-4-2)", note)
         self.assertIn("spec.memoryLimit, which is not a key of the composition's spec", note)
         self.assertIn("the container's memory use before it was killed", st["missingContext"])
 
@@ -217,7 +217,7 @@ class TestKept(Case):
     def test_a_delete_is_not_retargeted(self):
         how = {**SET_RESOURCES,
                "apply": ("#!/usr/bin/env bash\n# Restart the pod.\nset -euo pipefail\n"
-                         "kubectl delete pod web-679dc47cb6-z72m5 -n shop --ignore-not-found\n")}
+                         "kubectl delete pod web-679dc47cb6-z72m5 -n team-a --ignore-not-found\n")}
         how.pop("rollback")
         st = self.analyze(how)
         self.assertEqual(st["howToFix"], how)
@@ -237,13 +237,13 @@ class TestScriptTargets(unittest.TestCase):
 
     def test_kubectl_writes_are_read_off_the_apply_script(self):
         cases = {
-            "kubectl set resources deployment web -n shop -c web --limits=memory=512Mi":
-                ("apps/v1", "deployments", "shop", "web"),
-            "kubectl set image deploy/web web=ghcr.io/example/web:1.4.3 --namespace=shop":
-                ("apps/v1", "deployments", "shop", "web"),
-            "kubectl -n shop patch statefulsets.apps db --type strategic \\\n  -p '{\"spec\":{}}'":
-                ("apps/v1", "statefulsets", "shop", "db"),
-            "kubectl scale sts db --replicas=3 -n shop": ("apps/v1", "statefulsets", "shop", "db"),
+            "kubectl set resources deployment web -n team-a -c web --limits=memory=512Mi":
+                ("apps/v1", "deployments", "team-a", "web"),
+            "kubectl set image deploy/web web=ghcr.io/example/web:1.4.3 --namespace=team-a":
+                ("apps/v1", "deployments", "team-a", "web"),
+            "kubectl -n team-a patch statefulsets.apps db --type strategic \\\n  -p '{\"spec\":{}}'":
+                ("apps/v1", "statefulsets", "team-a", "db"),
+            "kubectl scale sts db --replicas=3 -n team-a": ("apps/v1", "statefulsets", "team-a", "db"),
         }
         for line, want in cases.items():
             with self.subTest(line=line):
@@ -251,18 +251,18 @@ class TestScriptTargets(unittest.TestCase):
 
     def test_reads_deletes_restarts_and_composition_writes_are_not_targets(self):
         apply = ("#!/usr/bin/env bash\n"
-                 "d=$(kubectl get deployment web -n shop -o json)\n"
-                 "kubectl delete pod web-1 -n shop\n"
-                 "kubectl rollout restart deployment/web -n shop\n"
-                 "kubectl patch webapps.composition.krateo.io web -n shop --type merge -p '{}'\n"
-                 "# kubectl patch deployment web -n shop\n")
+                 "d=$(kubectl get deployment web -n team-a -o json)\n"
+                 "kubectl delete pod web-1 -n team-a\n"
+                 "kubectl rollout restart deployment/web -n team-a\n"
+                 "kubectl patch webapps.composition.krateo.io web -n team-a --type merge -p '{}'\n"
+                 "# kubectl patch deployment web -n team-a\n")
         self.assertEqual(self.targets(apply), [])
 
     def test_the_apply_action_comes_first_without_repeats(self):
         action = {"verb": "patch", "apiVersion": "apps/v1", "resource": "deployments",
-                  "namespace": "shop", "name": "web", "payload": {"spec": {"replicas": 3}}}
-        self.assertEqual(self.targets("kubectl scale deployment web -n shop --replicas=3", action),
-                         [("apps/v1", "deployments", "shop", "web")])
+                  "namespace": "team-a", "name": "web", "payload": {"spec": {"replicas": 3}}}
+        self.assertEqual(self.targets("kubectl scale deployment web -n team-a --replicas=3", action),
+                         [("apps/v1", "deployments", "team-a", "web")])
 
 
 class TestChoice(unittest.TestCase):
@@ -303,7 +303,7 @@ class TestChoice(unittest.TestCase):
 
     def test_the_composition_apiversion_is_a_usable_apply_action(self):
         action = {"verb": "patch", "apiVersion": "composition.krateo.io/v1-12-36",
-                  "resource": "webapps", "namespace": "shop", "name": "web",
+                  "resource": "webapps", "namespace": "team-a", "name": "web",
                   "payload": {"spec": {"replicaCount": 3}}}
         self.assertEqual(report_v2._apply_action(action), (action, None))
         self.assertEqual(report_v2._apply_action({**action, "apiVersion": "x/v1-"})[1],
