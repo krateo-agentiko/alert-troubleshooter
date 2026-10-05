@@ -482,6 +482,16 @@ class TestAlertSpecPush(unittest.TestCase):
         self.assertEqual(patched[-1]['phase'], 'SpecDrift')
         self.assertIn('hyperdx said no', patched[-1]['error'])
 
+    def test_a_push_that_succeeds_again_clears_the_SpecDrift_error(self):
+        """A status merge keeps every key it is not given, so a Synced alert went on showing the
+        400 of a push that had failed hours earlier."""
+        r = self._reconciler()
+        hdx = self.FakeHdx(self._live(), tile_where='w')
+        patched = self._run(r, self._cr(), hdx)
+        self.assertEqual(patched[-1]['phase'], 'Synced')
+        self.assertIn('error', patched[-1])
+        self.assertIsNone(patched[-1]['error'])
+
     def test_mirrors_the_live_STATE_even_when_the_push_failed(self):
         """Losing the alert's state on top of a failed push would hide that it is firing."""
         r = self._reconciler()

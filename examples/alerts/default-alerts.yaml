@@ -17,7 +17,7 @@ spec:
   where: >-
     (positionCaseInsensitive(Body, 'Reconciler error') > 0
      OR JSONExtractString(Body, 'object', 'reason') = 'CannotObserveExternalResource')
-    AND ServiceName NOT IN ('krateo-observability', 'krateo-alert-provider',
+    AND ServiceName NOT IN ('krateo-observability', 'krateo-alert-provider', 'incident-controller',
         'krateo-clickstack', 'krateo-clickstack-clickhouse-clickhouse', 'clickhouse-mcp-server',
         'incident-agent', 'krateo-autopilot', 'kagent', 'repo-mcp-server')
   interval: 15m
