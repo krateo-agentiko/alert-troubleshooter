@@ -14,7 +14,7 @@ config:
   # A2A Service, named after the Agent's metadata.name -> incident-agent.<namespace>.svc:8080.
   autopilotA2aUrl: http://incident-agent.krateo-system.svc:8080/
   # kagent ModelConfig, in the release namespace, whose model judges which open incident of a
-  # firing alert covers the alert's current records (compare.py): one chat-completions call per
+  # firing alert covers the alert's current records (internal/compare): one chat-completions call per
   # firing, no agent. Provider OpenAI (its baseUrl; with apiKeyPassthrough the key is the service
   # JWT) or Gemini. A firing no open incident covers opens a new incident.
   compareModelConfig: gemini-flash

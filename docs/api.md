@@ -8,27 +8,27 @@ timestamp: 2026-08-20T00:00:00Z
 
 # API
 
-- **`Alert`** (`observability.krateo.io/v1alpha1`) — the inbound alert shape (see `crds/crd.alert.yaml`). `spec.where` is the ClickHouse SQL whose rows HyperDX counts. `status.state` mirrors HyperDX; `status.okSince` is when it last turned OK, unset while it is anything else (display only). The annotation `krateo.io/paused: "true"` skips its firings (see [usage](usage.md#pause-an-alert)).
-- **`Incident`** (`observability.krateo.io/v1alpha1`) — written here, owned by incident-controller, whose chart ships the CRD. The handler creates `<alert>-<yyyymmdd-hhmmss>` with the label `observability.krateo.io/alert` and `spec.alertRef`, `trigger`, `prompt`, `triggeredAt`, and writes status `state` (`Analyzing`, then `Open`), `firings`, `lastFiredAt`, `howToFix`, `error`, `completedAt` and the analysis fields below. It also counts firings (`firings`, `lastFiredAt`) on a `Resolved` incident for one `spec.interval` after its `resolution.at`. See [overview](overview.md#incidents).
+- **`Alert`** (`observability.krateo.io/v1alpha1`) — the inbound alert shape (see `helm/alert-provider-crds/templates/crd.alert.yaml`). `spec.where` is the ClickHouse SQL whose rows HyperDX counts. `status.state` mirrors HyperDX; `status.okSince` is when it last turned OK, unset while it is anything else (display only). `status.conditions` are provider-runtime's `Ready` and `Synced`. The annotation `krateo.io/paused: "true"` skips its firings (see [usage](usage.md#pause-an-alert)).
+- **`Incident`** (`observability.krateo.io/v1alpha1`) — written here, owned by incident-controller, whose chart ships the CRD. The provider creates `<alert>-<yyyymmdd-hhmmss>` with the label `observability.krateo.io/alert` and `spec.alertRef`, `trigger`, `prompt`, `triggeredAt`, and writes status `state` (`Analyzing`, then `Open`), `firings`, `lastFiredAt`, `howToFix`, `error`, `completedAt` and the analysis fields below. It also counts firings (`firings`, `lastFiredAt`) on a `Resolved` incident for one `spec.interval` after its `resolution.at`. See [overview](overview.md#incidents).
 
 HTTP: `POST /webhook` (acked 202); `GET /healthz`. The webhook body is
 `{"alertName":"<emoji> <Alert metadata.name>","state":"ALERT|OK","source":"hyperdx-alert"}`, the
-template the reconciler installs on its HyperDX webhook. The handler only logs it: the reconciler's
+template the reconciler installs on its HyperDX webhook. The provider only logs it: the reconciler's
 pass fires alerts.
 
 ## Comparison contract
 
-`compare.py` holds both sides of it. Each firing is one OpenAI chat-completions call
+`internal/compare` holds both sides of it. Each firing is one OpenAI chat-completions call
 (`<baseUrl>/chat/completions`) on the model of the ModelConfig `config.compareModelConfig`, with
-`compare.SYSTEM` and the prompt. The answer is one object `{"match": <incident number> | null,
+`compare.System` and the prompt. The answer is one object `{"match": <incident number> | null,
 "reason": "<one sentence>"}`, the number in prompt order. Anything else, a failed call, a 429, or no record matching the alert is no verdict. See
 [overview](overview.md#incident-comparison).
 
 ## RCA output contract
 
-`report_v2.py` holds both sides of it: the instructions appended to every RCA prompt, and the
+`internal/report` holds both sides of it: the instructions appended to every RCA prompt, and the
 parser of the agent's answer. The answer ends with one `json` block. The parser keeps the
-`V2_STATUS_KEYS` it finds there, sanitized, and falls back to a prose-only report when there is no
+`report.StatusKeys` it finds there, sanitized, and falls back to a prose-only report when there is no
 usable block.
 
 `howToFix` is the fix as four bash scripts:
@@ -64,6 +64,6 @@ The parser keeps it only alongside the three scripts. One that is malformed, del
 Node or CustomResourceDefinition, or carries a payload over 16384 characters is left out alone,
 and `missingContext` says so.
 
-The handler writes the `V2_STATUS_KEYS` onto the Incident. The parser's `evidence` (the
+The provider writes the `report.StatusKeys` onto the Incident. The parser's `evidence` (the
 retrieval ledger behind the confidence cap) is not stored; its sentence is already in the report
 and `missingContext`.

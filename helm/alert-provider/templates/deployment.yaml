@@ -5,7 +5,7 @@
 # default) writes. HyperDX's webhook posts to
 # http://krateo-alert-provider.krateo-system.svc:8080/webhook, which only acknowledges. Image is
 # tag-driven (values.image.tag = chart appVersion), multi-arch (linux/amd64 + linux/arm64). Bump
-# this version tag alongside any handler.py/hyperdx*.py change that needs to reach the cluster.
+# this version tag alongside any code change that needs to reach the cluster.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -39,6 +39,10 @@ rules:
   - apiGroups: ["kagent.dev"]
     resources: ["modelconfigs"]
     verbs: ["get"]
+  # provider-runtime records Events on the Alerts it reconciles
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

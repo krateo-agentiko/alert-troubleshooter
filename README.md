@@ -57,4 +57,8 @@ See [examples/webhook/](examples/webhook/).
 [docs/index.md](docs/index.md) — overview, usage, API, configuration, release, log.
 
 ## Develop & release
+`make check` builds, vets and tests the Go module (on Krateo's provider-runtime) and lints the charts. The
+testdata corpora under `internal/*/testdata` are the Python implementation's outputs, recorded by
+`hack/golden/generate.py`; the Go code is held to them.
+
 Tag a bare semver; CI builds the image and publishes the chart. See [docs/release.md](docs/release.md).
