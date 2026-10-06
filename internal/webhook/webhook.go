@@ -50,7 +50,7 @@ func Serve(ctx context.Context, addr string, log logging.Logger) error {
 	srv := &http.Server{Addr: addr, Handler: Handler(log), ReadHeaderTimeout: 30 * time.Second}
 	go func() {
 		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
 	}()
