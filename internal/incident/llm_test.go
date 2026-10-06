@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/compare"
+	"github.com/krateo-platformops/alert-provider/internal/compare"
 )
 
 var names = []string{"a", "b"}

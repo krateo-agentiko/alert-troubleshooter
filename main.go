@@ -26,14 +26,14 @@ import (
 	"github.com/krateo-platformops/provider-runtime/pkg/logging"
 	"github.com/krateo-platformops/provider-runtime/pkg/ratelimiter"
 
-	"github.com/krateo-platformops/alert-troubleshooter/apis"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/bootstrap"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/compare"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/controllers/alert"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/controllers/common/option"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/hyperdx"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/incident"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/webhook"
+	"github.com/krateo-platformops/alert-provider/apis"
+	"github.com/krateo-platformops/alert-provider/internal/bootstrap"
+	"github.com/krateo-platformops/alert-provider/internal/compare"
+	"github.com/krateo-platformops/alert-provider/internal/controllers/alert"
+	"github.com/krateo-platformops/alert-provider/internal/controllers/common/option"
+	"github.com/krateo-platformops/alert-provider/internal/hyperdx"
+	"github.com/krateo-platformops/alert-provider/internal/incident"
+	"github.com/krateo-platformops/alert-provider/internal/webhook"
 )
 
 const serviceName = "krateo-alert-provider"

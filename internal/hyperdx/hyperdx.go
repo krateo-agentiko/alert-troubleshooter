@@ -19,9 +19,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/compare"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/httpx"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/compare"
+	"github.com/krateo-platformops/alert-provider/internal/httpx"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 )
 
 // DefaultWebhookBody is the generic webhook's body. A generic webhook body can use only {{title}},

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/golden"
+	"github.com/krateo-platformops/alert-provider/internal/golden"
 )
 
 // TestAnalyzeMatchesPython replays the streams hack/golden/generate.py fed Python's a2a_analyze:

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/krateo-platformops/alert-troubleshooter/apis/alert/v1alpha1"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/apis/alert/v1alpha1"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 )
 
 // Tautology is why the alert can never change state, or "" if it can.

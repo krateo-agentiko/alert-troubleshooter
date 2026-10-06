@@ -3,7 +3,7 @@ package incident
 import (
 	"testing"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/golden"
+	"github.com/krateo-platformops/alert-provider/internal/golden"
 )
 
 func TestBuildPromptMatchesPython(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 )
 
 // The Incident contract (incident-controller apis/incident/v1alpha1).

@@ -33,3 +33,4 @@ timestamp: 2026-08-20T00:00:00Z
 
 ## 2026-10-06
 - The provider is a Go controller on Krateo's provider-runtime, in place of the Python reconcile loop; the chart's values and environment, the Alert and Incident contracts and the webhook are unchanged. `Alert.status.conditions` carries provider-runtime's `Ready` and `Synced`. The bootstrap Job runs `/bin/alert-provider bootstrap`. The Role grants `events.k8s.io` Events.
+- The GitHub repository is `krateo-platformops/alert-provider`; GitHub redirects the old `alert-troubleshooter` name.

@@ -39,8 +39,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/httpx"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/httpx"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 )
 
 // Config is the HyperDX to log in to, its admin, and the Secret to write.

@@ -12,8 +12,8 @@ import (
 	"github.com/krateo-platformops/provider-runtime/pkg/logging"
 	"github.com/krateo-platformops/provider-runtime/pkg/meta"
 
-	"github.com/krateo-platformops/alert-troubleshooter/apis/alert/v1alpha1"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/hyperdx"
+	"github.com/krateo-platformops/alert-provider/apis/alert/v1alpha1"
+	"github.com/krateo-platformops/alert-provider/internal/hyperdx"
 )
 
 // webhook is what every Alert's pass shares: the HyperDX source the alerts count and the generic

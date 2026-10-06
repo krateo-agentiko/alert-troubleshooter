@@ -10,8 +10,8 @@ import (
 
 	"github.com/krateo-platformops/provider-runtime/pkg/logging"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/incident"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/incident"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 )
 
 // Handler answers GET /healthz with 200 and any POST, on any path, as a HyperDX notification: 202

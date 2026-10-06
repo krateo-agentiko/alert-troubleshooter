@@ -20,9 +20,9 @@ import (
 
 	"github.com/krateo-platformops/provider-runtime/pkg/logging"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/compare"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/pyfmt"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/report"
+	"github.com/krateo-platformops/alert-provider/internal/compare"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/report"
 )
 
 const (

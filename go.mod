@@ -1,4 +1,4 @@
-module github.com/krateo-platformops/alert-troubleshooter
+module github.com/krateo-platformops/alert-provider
 
 go 1.26.0
 

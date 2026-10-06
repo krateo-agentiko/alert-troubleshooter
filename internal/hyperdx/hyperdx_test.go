@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/compare"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/golden"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/hyperdx"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/hyperdx/hyperdxtest"
+	"github.com/krateo-platformops/alert-provider/internal/compare"
+	"github.com/krateo-platformops/alert-provider/internal/golden"
+	"github.com/krateo-platformops/alert-provider/internal/hyperdx"
+	"github.com/krateo-platformops/alert-provider/internal/hyperdx/hyperdxtest"
 )
 
 var ctx = context.Background()

@@ -18,13 +18,13 @@ import (
 	"github.com/krateo-platformops/provider-runtime/pkg/meta"
 	"github.com/krateo-platformops/provider-runtime/pkg/resource"
 
-	"github.com/krateo-platformops/alert-troubleshooter/apis"
-	"github.com/krateo-platformops/alert-troubleshooter/apis/alert/v1alpha1"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/compare"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/golden"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/hyperdx"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/hyperdx/hyperdxtest"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/incident"
+	"github.com/krateo-platformops/alert-provider/apis"
+	"github.com/krateo-platformops/alert-provider/apis/alert/v1alpha1"
+	"github.com/krateo-platformops/alert-provider/internal/compare"
+	"github.com/krateo-platformops/alert-provider/internal/golden"
+	"github.com/krateo-platformops/alert-provider/internal/hyperdx"
+	"github.com/krateo-platformops/alert-provider/internal/hyperdx/hyperdxtest"
+	"github.com/krateo-platformops/alert-provider/internal/incident"
 )
 
 const (

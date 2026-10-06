@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 )
 
 // Load reads a corpus, gzipped when its name ends in .gz, with numbers as json.Number.

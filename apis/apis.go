@@ -4,7 +4,7 @@ package apis
 import (
 	"k8s.io/apimachinery/pkg/runtime"
 
-	alertv1alpha1 "github.com/krateo-platformops/alert-troubleshooter/apis/alert/v1alpha1"
+	alertv1alpha1 "github.com/krateo-platformops/alert-provider/apis/alert/v1alpha1"
 )
 
 func init() {

@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 )
 
 var (

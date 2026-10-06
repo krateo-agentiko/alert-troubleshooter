@@ -13,9 +13,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/httpx"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/pyfmt"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/report"
+	"github.com/krateo-platformops/alert-provider/internal/httpx"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/report"
 )
 
 // A2A calls the RCA agent (incident-agent) with JSON-RPC message/stream.

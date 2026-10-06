@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/golden"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/golden"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 )
 
 func TestMatchesPython(t *testing.T) {

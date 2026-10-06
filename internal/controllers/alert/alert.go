@@ -33,13 +33,13 @@ import (
 	"github.com/krateo-platformops/provider-runtime/pkg/reconciler"
 	"github.com/krateo-platformops/provider-runtime/pkg/resource"
 
-	"github.com/krateo-platformops/alert-troubleshooter/apis/alert/v1alpha1"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/compare"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/controllers/common/option"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/httpx"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/hyperdx"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/incident"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/apis/alert/v1alpha1"
+	"github.com/krateo-platformops/alert-provider/internal/compare"
+	"github.com/krateo-platformops/alert-provider/internal/controllers/common/option"
+	"github.com/krateo-platformops/alert-provider/internal/httpx"
+	"github.com/krateo-platformops/alert-provider/internal/hyperdx"
+	"github.com/krateo-platformops/alert-provider/internal/incident"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 )
 
 // Finalizer guards each Alert so its HyperDX alert and dashboard are removed before it is deleted.

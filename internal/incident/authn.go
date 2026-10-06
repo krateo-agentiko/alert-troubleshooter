@@ -14,7 +14,7 @@ import (
 
 	"github.com/krateo-platformops/provider-runtime/pkg/logging"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/httpx"
+	"github.com/krateo-platformops/alert-provider/internal/httpx"
 )
 
 // ServiceJWT is the alert provider's service identity, for intra-service auth. The alert-to-RCA

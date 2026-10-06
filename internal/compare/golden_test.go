@@ -3,8 +3,8 @@ package compare
 import (
 	"testing"
 
-	"github.com/krateo-platformops/alert-troubleshooter/internal/golden"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/internal/golden"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 )
 
 // alertOf is the Alert the reconcile passes for a CR, read as Python's prompt reads it.

@@ -10,8 +10,8 @@ import (
 
 	"github.com/krateo-platformops/provider-runtime/pkg/logging"
 
-	"github.com/krateo-platformops/alert-troubleshooter/apis/alert/v1alpha1"
-	"github.com/krateo-platformops/alert-troubleshooter/internal/pyfmt"
+	"github.com/krateo-platformops/alert-provider/apis/alert/v1alpha1"
+	"github.com/krateo-platformops/alert-provider/internal/pyfmt"
 )
 
 // Seeder creates the default Alerts, once per start, retrying every Interval until the Alert CRD
