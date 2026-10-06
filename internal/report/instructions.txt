@@ -1,0 +1,197 @@
+
+
+After the markdown analysis, END your answer with EXACTLY ONE fenced ```json code block (no text
+after it) containing a machine-readable summary of the SAME investigation, with these keys:
+
+{
+  "analyzedResources": [{"gvr": "apps/v1/deployments", "name": "...", "namespace": "...", "whatWasRead": "status + last events"}],
+  "sources": [{"type": "logs|events|metrics|object", "ref": "where this evidence came from", "excerpt": "short verbatim excerpt"}],
+  "retrieval": [{"source": "k8s|logs|metrics|repo", "scope": "pods in krateo-system", "outcome": "success|denied|empty|errored", "detail": "Forbidden: cannot list pods"}],
+  "missingContext": ["what you could NOT see"],
+  "assumptions": ["what you assumed because of that"],
+  "reasoningTrace": [{"step": 1, "statement": "...", "evidenceRefs": [0]}],
+  "rootCause": {"statement": "...", "confidence": 0.85, "category": "config|capacity|image|network|dependency|other"},
+  "howToFix": {"precondition": "<bash script>", "apply": "<bash script>", "verify": "<bash script>", "rollback": "<bash script>",
+               "applyAction": {"verb": "patch|create|delete", "apiVersion": "apps/v1", "resource": "deployments", "namespace": "...", "name": "...", "payload": {}}}
+}
+
+Hard rules for this block:
+- analyzedResources/sources list ONLY what you actually read this run — never invent entries.
+- missingContext and assumptions MUST be honest: if you could not read something you wanted
+  (logs, metrics, an object, RBAC-denied, empty results), SAY SO there instead of papering over it.
+- EVERY reasoningTrace step MUST cite evidence: evidenceRefs are 0-based indices into "sources",
+  and every step needs at least one. A step you cannot back with a listed source belongs in
+  "assumptions", not in the trace.
+- RETRIEVAL LEDGER: "retrieval" records, for EVERY source you tried to read this run, what came
+  back — outcome "success" (you got data), "empty" (the read ran and returned nothing), "denied"
+  (authz refused you: Forbidden, 403, "cannot list ..."), "errored" (the tool itself failed:
+  timeout, no healthy backend, 5xx). List the reads that produced NOTHING too — especially those.
+  "empty" and "denied" are DIFFERENT facts and must never be merged: "there are no matching pods"
+  and "I am not allowed to look at pods" support opposite conclusions, and reporting a denial as
+  an absent section hides it. A denial you are REPORTING ON (some other account was refused) is a
+  FINDING, not your own retrieval outcome — keep it in sources, not here.
+- CONFIDENCE IS A FUNCTION OF THE EVIDENCE YOU ACTUALLY RETRIEVED, not of how coherent your story
+  is. Start from what you read and discount for every source you depended on and did not get:
+    * a depended-on source denied  → confidence AT MOST 0.4 (you are guessing about what it held)
+    * a depended-on source errored → confidence AT MOST 0.6
+    * nothing retrieved at all     → confidence AT MOST 0.2
+  A conclusion you could not check against the cluster is a hypothesis; score it like one. These
+  ceilings are ALSO enforced after you answer, so an unbounded number is simply overwritten —
+  declaring an honest one is how your own reasoning stays visible in the report.
+- Do NOT state a numeric confidence anywhere in the markdown prose — only in this JSON block. The
+  published confidence may be bounded down by the retrieval ledger, and a percentage left in the
+  prose would then contradict the report's own status.
+
+HOW TO FIX. "howToFix" is the fix as four bash scripts, each ONE JSON string (newlines as \n,
+double quotes and backslashes escaped). A controller runs precondition and verify and moves the
+incident on their exit codes; a human reviews apply and runs it, and runs rollback only to undo
+apply. Nothing else runs automatically.
+- EXIT CODES, precondition and verify alike: 0 = the incident is gone, 1 = it still holds,
+  anything else or a timeout = unknown, which changes nothing. Exit 2 whenever the script cannot
+  tell.
+- PRECONDITION asks "does the incident still hold?". It first runs right after your analysis and
+  MUST exit 1 then: a 0 on that first run flags the incident as not reproduced. Build its test from
+  the values you read this run, so it holds against the state you saw.
+- TEST THE ROOT-CAUSE OBJECT, NEVER THE ALERT'S SIGNAL. Read the one object rootCause names, by
+  kind, name and namespace, and test the field that is wrong on it. Never re-run the alert's query,
+  count its rows or re-evaluate everything it matched: the alert can keep firing for a second
+  reason, and the check must still tell whether THIS cause is gone. Test current state (spec,
+  status, existence), not logs or Events: those describe the past and expire, and a check built on
+  them reports "gone" when they do.
+- VERIFY asks "did the fix work?": the root cause is gone and what it broke is healthy again. Test
+  that outcome, not the literal change apply makes, since a human may fix it another way. It runs
+  after the precondition exits 0 or a human marks apply done, and is retried for a settle window of
+  about five minutes, so read once; do not wait or poll.
+- THE SANDBOX. Precondition and verify run in a pod with only bash, kubectl and jq, as a
+  ServiceAccount that can get and list but never write, and cannot read Secrets. Its network
+  reaches only the Kubernetes API server, and it is killed after 60 seconds. So a check uses bash
+  builtins, read-only kubectl and jq, and nothing else (no grep, sed, awk or curl; no ClickHouse,
+  HyperDX or snowplow), and finishes in seconds. kubectl already reaches the right cluster and the
+  controller enforces the deadline: pass no --server, --kubeconfig, --context or --request-timeout.
+  When the root-cause object is a Secret, test the object whose state shows it (the workload that
+  mounts it) and say so in assumptions.
+- A FAILED READ IS UNKNOWN, NEVER A VERDICT. kubectl exits 1 on any error (Forbidden, NotFound,
+  timeout), and 1 means "still holds". So no `set -e` in a check; end every read with `|| exit 2`;
+  map a `jq -e` test explicitly (0 = true, 1 = false, any other code is an error, so exit 2). When
+  absence IS the answer, read with `--ignore-not-found` and decide what empty output means.
+- Status can describe the previous spec: when a kind reports status.observedGeneration, trust its
+  status only once that reaches metadata.generation.
+- Name a custom resource by resource.group (alerts.observability.krateo.io): short names collide
+  across API groups.
+- APPLY is the corrective write, reviewed and run by a human with bash, kubectl and jq. It is
+  readable (a comment saying what it changes and why) and idempotent: a second run changes nothing.
+  It may `set -euo pipefail`. Prefer kubectl's own verbs (set image, set resources, scale) to
+  hand-written patches. A `--type merge` patch replaces every list it touches, so never merge-patch
+  a list such as containers; built-in kinds take kubectl's default strategic patch, which merges
+  containers by name.
+- BE ACTIONABLE: when the evidence identifies a safe corrective write (adjust a limit, fix an image
+  tag, narrow an Alert's where, delete a stuck object), apply makes it; an apply that only reads is
+  a MISS. Only when you genuinely cannot determine a safe write does apply hold comments alone,
+  saying what a human must decide, with the reason in missingContext.
+- VERIFY IT EXISTS: every object a script names is one you read this run. If a workload you would
+  fix is missing, do not create or provision it in apply; report it in missingContext.
+- ROLLBACK undoes apply: it restores what apply changed to the values you read this run (the
+  previous image tag, limit, replica count or where), so a human can revert a fix that made things
+  worse. It follows apply's rules: readable, idempotent, kubectl's own verbs, and it may
+  `set -euo pipefail`. When apply holds only comments, rollback is a comment saying there is
+  nothing to undo.
+- apply and rollback never delete a Namespace, a Node or a CustomResourceDefinition: each takes
+  everything under it along.
+- APPLY ACTION. When apply is exactly ONE Kubernetes write, also give that write as "applyAction"
+  (a JSON object, not a script): the portal's Apply button sends it as the person who clicks, with
+  their permissions. It makes the same change apply makes. "verb" is "patch" (payload is a JSON
+  merge patch), "create" (payload is the whole new object: apiVersion, kind, metadata.name) or
+  "delete" (no payload). "apiVersion" is "v1" or "<group>/<version>", "resource" the lowercase
+  plural (deployments, alerts), "namespace" empty for a cluster-scoped object, "name" the target
+  (for create, the new object's name). A merge patch replaces every list it touches, so a patch
+  that changes a list gives the whole list as you read it this run, with the change made; when
+  that list is containers or anything else keyed by name, leave applyAction out. Leave it out, too,
+  when apply reads state first, makes more than one write, runs anything but kubectl, or holds only
+  comments: the human then runs the script.
+- Every script starts with `#!/usr/bin/env bash` and a comment line saying what it tests or changes.
+
+Example: payments-api is OOMKilled at a 128Mi memory limit.
+  precondition:
+    #!/usr/bin/env bash
+    # Holds while payments-api still has the 128Mi memory limit it was OOMKilled at.
+    d=$(kubectl get deployment payments-api -n payments -o json) || exit 2
+    jq -e '.spec.template.spec.containers[] | select(.name == "payments-api")
+      | .resources.limits.memory == "128Mi"' <<<"$d" >/dev/null
+    case $? in 0) exit 1 ;; 1) exit 0 ;; *) exit 2 ;; esac
+  apply:
+    #!/usr/bin/env bash
+    # Raise payments-api's memory limit from 128Mi, where it was OOMKilled, to 512Mi.
+    set -euo pipefail
+    kubectl set resources deployment payments-api -n payments -c payments-api --limits=memory=512Mi
+  verify:
+    #!/usr/bin/env bash
+    # Fixed once payments-api is off the 128Mi limit and every replica runs the new spec.
+    d=$(kubectl get deployment payments-api -n payments -o json) || exit 2
+    jq -e '(.spec.template.spec.containers[] | select(.name == "payments-api")
+        | .resources.limits.memory != "128Mi")
+      and .status.observedGeneration >= .metadata.generation
+      and .status.updatedReplicas == .spec.replicas
+      and .status.availableReplicas == .spec.replicas' <<<"$d" >/dev/null
+    case $? in 0) exit 0 ;; 1) exit 1 ;; *) exit 2 ;; esac
+  rollback:
+    #!/usr/bin/env bash
+    # Undo apply: put payments-api's memory limit back to 128Mi, the value read before the fix.
+    set -euo pipefail
+    kubectl set resources deployment payments-api -n payments -c payments-api --limits=memory=128Mi
+  applyAction: none. The limit sits in the containers list, and a merge patch would replace it.
+
+Example: deployment web in shop cannot pull its private image; it has no imagePullSecrets, and
+the Secret regcred exists in shop. Its precondition, verify and rollback follow the first
+example's pattern; apply is one write, so it has an applyAction.
+  apply:
+    #!/usr/bin/env bash
+    # Give web the regcred pull secret, so it can pull its private image.
+    set -euo pipefail
+    kubectl patch deployment web -n shop --type merge \
+      -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"regcred"}]}}}}'
+  applyAction:
+    {"verb": "patch", "apiVersion": "apps/v1", "resource": "deployments", "namespace": "shop",
+     "name": "web", "payload": {"spec": {"template": {"spec": {"imagePullSecrets": [{"name": "regcred"}]}}}}}
+
+ALERT QUERY FALSE-POSITIVES: when the rows an Alert counts are written by the telemetry pipeline
+itself (a component that evaluates, stores or analyzes the alert logs text matching the alert's
+own where), the root-cause object is the Alert, not a workload. The fix narrows its spec.where
+(ClickHouse SQL) to exclude the services those rows name. Take the names from the rows you read,
+never from memory, and never target a Deployment or Composition for it: the rule lives in the
+Alert. With <alert>, <namespace>, <svc-a> and <svc-b> filled in:
+  precondition:
+    #!/usr/bin/env bash
+    # Holds while <alert>'s where does not exclude <svc-a> and <svc-b>.
+    w=$(kubectl get alerts.observability.krateo.io <alert> -n <namespace> -o jsonpath='{.spec.where}') || exit 2
+    for s in <svc-a> <svc-b>; do
+      [[ $w == *"'$s'"* ]] || exit 1
+    done
+    exit 0
+  apply:
+    #!/usr/bin/env bash
+    # Exclude <svc-a> and <svc-b>, whose logs echo this alert's own query, from its where.
+    set -euo pipefail
+    x="ServiceName NOT IN ('<svc-a>', '<svc-b>')"
+    w=$(kubectl get alerts.observability.krateo.io <alert> -n <namespace> -o jsonpath='{.spec.where}')
+    case "$w" in *"$x"*) exit 0 ;; esac
+    kubectl patch alerts.observability.krateo.io <alert> -n <namespace> --type merge \
+      -p "$(jq -n --arg w "($w) AND $x" '{spec: {where: $w}}')"
+  verify:
+    #!/usr/bin/env bash
+    # Fixed once the where excludes both services and the reconciler has pushed it (phase Synced).
+    o=$(kubectl get alerts.observability.krateo.io <alert> -n <namespace> -o json) || exit 2
+    jq -e --arg a "'<svc-a>'" --arg b "'<svc-b>'" \
+      '(.spec.where // "" | contains($a) and contains($b)) and .status.phase == "Synced"' <<<"$o" >/dev/null
+    case $? in 0) exit 0 ;; 1) exit 1 ;; *) exit 2 ;; esac
+  rollback:
+    #!/usr/bin/env bash
+    # Undo apply: drop the <svc-a> and <svc-b> exclusion from <alert>'s where.
+    set -euo pipefail
+    x="ServiceName NOT IN ('<svc-a>', '<svc-b>')"
+    w=$(kubectl get alerts.observability.krateo.io <alert> -n <namespace> -o jsonpath='{.spec.where}')
+    case "$w" in "("*") AND $x") ;; *) exit 0 ;; esac
+    w=${w%") AND $x"}; w=${w#"("}
+    kubectl patch alerts.observability.krateo.io <alert> -n <namespace> --type merge \
+      -p "$(jq -n --arg w "$w" '{spec: {where: $w}}')"
+
+Output STRICT JSON (double quotes, no comments, no trailing commas).

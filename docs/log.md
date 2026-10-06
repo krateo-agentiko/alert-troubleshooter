@@ -30,3 +30,7 @@ timestamp: 2026-08-20T00:00:00Z
 - The seeded `krateo-composition-reconcile-error` excludes `incident-controller`: its own "Reconciler error" lines are about Incidents, and on krateo-057 they were ~21k rows a day that kept the alert firing every minute. Seeding only creates an absent Alert, so an existing one keeps its old `where` until it is edited or deleted and reseeded.
 - An Alert whose spec push succeeds again clears the previous `SpecDrift` `error`.
 - An `applyAction` may name a Krateo composition's dashed version (`composition.krateo.io/v1-12-36`); the parser used to drop it, so a fix that patches a composition's spec had no Apply button.
+
+## 2026-10-06
+- The provider is a Go controller on Krateo's provider-runtime, in place of the Python reconcile loop; the chart's values and environment, the Alert and Incident contracts and the webhook are unchanged. `Alert.status.conditions` carries provider-runtime's `Ready` and `Synced`. The bootstrap Job runs `/bin/alert-provider bootstrap`. The Role grants `events.k8s.io` Events.
+- The GitHub repository is `krateo-platformops/alert-provider`; GitHub redirects the old `alert-troubleshooter` name.

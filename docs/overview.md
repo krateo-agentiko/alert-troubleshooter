@@ -8,7 +8,7 @@ timestamp: 2026-08-20T00:00:00Z
 
 # alert-provider
 
-A controller (not an agent). The reconciler mirrors each `Alert`'s HyperDX state about every
+A controller (not an agent), on Krateo's provider-runtime. The reconciler mirrors each `Alert`'s HyperDX state about every
 60 s (`config.reconcileInterval`), and each pass that finds it ALERT is one firing. A firing is
 recorded on an `Incident` (`observability.krateo.io/v1alpha1`, the CRD incident-controller ships):
 an open incident of the same problem counts it, or a new incident opens and **incident-agent**
@@ -20,6 +20,28 @@ only logged: a HyperDX alert needs a channel, and the reconciler already fires i
 It lives in `krateo-platformops` (not `krateo-agentiko`) because it is observability
 plumbing keyed on the platform `observability.krateo.io` API group and rendered by the
 portal — it *calls* an agent, it is not one.
+
+## Controller
+
+Each `Alert` is a provider-runtime managed resource whose external resource is its HyperDX alert
+and dashboard. A reconcile is one pass, every `config.reconcileInterval`:
+
+- Connect reads the HyperDX source and ensures the shared webhook, at most once per interval for
+  all Alerts. A recreated webhook resets every Alert, which rebuilds its HyperDX alert on it.
+- Observe finds the HyperDX alert by `status.hyperdxAlertId`, else by name, mirrors its state and
+  plans the push. It never reports the alert missing: provider-runtime's create handshake would
+  then block an Alert whose create was cut short until a person clears an annotation. Update
+  creates a missing alert, or pushes the spec.
+- A pass that finds the alert ALERT fires it, once per interval: reconciles the poll did not
+  schedule (a spec edit, an error's retry) fire nothing.
+- `krateo.io/paused` is also provider-runtime's annotation for skipping a whole reconcile. An
+  Alert hides it from provider-runtime, so a paused Alert is still pushed and mirrored and only
+  its firings stop.
+- The finalizer `observability.krateo.io/hyperdx-cleanup` removes the HyperDX alert and dashboard
+  before the Alert goes, best-effort, so a delete is never wedged on HyperDX.
+- `status.conditions` carries provider-runtime's `Ready` and `Synced`; `status.phase` keeps its
+  meaning. The controller emits no warning Events: the seeded reconcile-error alert counts
+  `CannotObserveExternalResource` Events, and a HyperDX outage would make it fire on itself.
 
 ## Alert identity
 
@@ -40,7 +62,7 @@ One `Alert` CR is one HyperDX alert and its own incidents, keyed on the CR's `me
 ## Incidents
 
 An alert has an incident per problem, and several may be open at once; an incident is open in any
-state but `Resolved` and `Closed`. For each firing, `handler.fire`:
+state but `Resolved` and `Closed`. For each firing, the incident writer (`internal/incident`):
 
 1. lists the Incidents in the Alert's namespace labelled with the Alert's name;
 2. asks the comparison model, in one call over the open incidents that have an analysis (a root
@@ -78,14 +100,14 @@ state but `Resolved` and `Closed`. For each firing, `handler.fire`:
   opens the incident, with `status.error` saying why it has no scripts.
 - An incident a human closed while it was analyzing stays `Closed`, which is final: the analysis
   is written without a state.
-- At startup the handler opens every incident a restart left `Analyzing`, with the reason in
+- At startup the provider opens every incident a restart left `Analyzing`, with the reason in
   `error`, so it can be closed and the next firing opens a fresh one.
 - The alert returning to OK changes nothing. From `Open` on, the incident controller runs its
   scripts and moves it, or a human closes it.
 
 ## Incident comparison
 
-`compare.py` holds both sides of it: the prompt and the verdict parser.
+`internal/compare` holds both sides of it: the prompt and the verdict parser.
 
 - One chat completion per firing, with no agent and no tools, on the model of the kagent
   ModelConfig `config.compareModelConfig` (default `gemini-flash`): provider OpenAI at its
@@ -96,7 +118,7 @@ state but `Resolved` and `Closed`. For each firing, `handler.fire`:
   the `config.maxCompareCandidates` (50) newest open analyzed incidents, newest first, each as its root cause and its
   precondition, apply and verify scripts.
 - The records are the alert's `where` rows over one `spec.interval`, from HyperDX's
-  `/api/v2/charts/series` grouped by `compare.ROW_GROUP`: a line per distinct record (a k8s
+  `/api/v2/charts/series` grouped by `compare.RowGroup`: a line per distinct record (a k8s
   event's object, reason and message; any other log's service and pod), with its
   count, the 20 most frequent quoted. No row is no verdict: HyperDX's `ALERT` comes from its last
   evaluation, and the window read later can have aged past every row.

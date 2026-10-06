@@ -22,4 +22,4 @@ keywords:
   - alerts
   - crd
 sources:
-  - https://github.com/krateo-platformops/alert-troubleshooter
+  - https://github.com/krateo-platformops/alert-provider

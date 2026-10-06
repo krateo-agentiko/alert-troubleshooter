@@ -171,8 +171,8 @@ def split_image(lines, idx):
 def scan(root):
     charts, images = set(), set()
     for dirpath, dirnames, filenames in os.walk(root):
-        # tests/ holds recorded fixtures, which nothing deploys.
-        dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "charts", "tests")]
+        # testdata/ holds recorded fixtures, which nothing deploys.
+        dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "charts", "tests", "testdata")]
         for fn in filenames:
             if not fn.endswith((".yaml", ".yml", ".tpl", ".json")):
                 continue
