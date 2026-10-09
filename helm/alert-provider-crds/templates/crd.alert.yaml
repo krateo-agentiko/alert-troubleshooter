@@ -127,6 +127,3 @@ spec:
                     NOT match this CR) / Error.
                 error:
                   type: string
-                lastSyncedAt:
-                  type: string
-                  format: date-time

@@ -1,8 +1,8 @@
 // Package incident turns a firing alert into Incidents, each with a root-cause analysis.
 //
 // The Alert reconcile mirrors every Alert's HyperDX state about every 60 s and calls Fire for each
-// one that is ALERT. Fire counts the firing on an incident that covers it (see pick) or opens a
-// new one: it creates the Incident in state Analyzing, runs the incident-agent RCA over A2A, and
+// one that is ALERT. A firing an incident covers (see pick) writes nothing; any other opens a new
+// incident: it creates the Incident in state Analyzing, runs the incident-agent RCA over A2A, and
 // writes the analysis with its howToFix scripts in state Open. An alert therefore has any number
 // of incidents, one per problem. From Open on, the incident controller runs the scripts and moves
 // the Incident.
@@ -12,7 +12,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 
@@ -290,46 +289,18 @@ func (w *Writer) patchStatus(ctx context.Context, ns string, incident map[string
 		"metadata": map[string]any{"resourceVersion": m["resourceVersion"]}, "status": st})
 }
 
-func firings(st map[string]any) int {
-	v := st["firings"]
-	if !pyfmt.Truthy(v) {
-		return 0
+// covered logs the incident that covers a firing. The firing writes nothing to it.
+func (w *Writer) covered(ns string, incident map[string]any) {
+	shown, ok := state(incident)
+	if !ok || shown == "" {
+		shown = "new"
 	}
-	if f, ok := pyfmt.Float(v); ok {
-		return int(f)
-	}
-	n, _ := strconv.Atoi(pyfmt.Str(v))
-	return n
+	w.log.Info(fmt.Sprintf("[incident] %s/%s: covers the firing (%s)", ns, str(metadata(incident), "name"), shown))
 }
 
-// countOn adds one firing and lastFiredAt to incident name, and nothing else, re-read on a lost
-// race.
-func (w *Writer) countOn(ctx context.Context, ns, name, now string) error {
-	for range writeAttempts {
-		incident, err := w.kube.Get(ctx, ns, name)
-		if err != nil {
-			return err
-		}
-		st := status(incident)
-		if err := w.patchStatus(ctx, ns, incident, map[string]any{"firings": firings(st) + 1, "lastFiredAt": now}); err != nil {
-			if code(err) == 409 {
-				continue
-			}
-			return err
-		}
-		shown, ok := state(incident)
-		if !ok || shown == "" {
-			shown = "new"
-		}
-		w.log.Info(fmt.Sprintf("[incident] %s/%s: firing counted (%s)", ns, name, shown))
-		return nil
-	}
-	return fmt.Errorf("incident %s/%s: no firing write succeeded in %d attempts", ns, name, writeAttempts)
-}
-
-// openOrCount is one firing: it counts it on the incident pick chooses, or creates one. It returns
-// the new Incident, or nil when the firing was counted on an existing one.
-func (w *Writer) openOrCount(ctx context.Context, ns string, alert Alert, prompt string, at time.Time,
+// openOrCover is one firing: an incident pick chooses covers it, or it creates one. It returns
+// the new Incident, or nil when an existing one covers the firing.
+func (w *Writer) openOrCover(ctx context.Context, ns string, alert Alert, prompt string, at time.Time,
 	grace time.Duration, rows func() ([]compare.Row, error)) (map[string]any, error) {
 	now := pyfmt.Isoformat(at)
 	items, err := w.alertIncidents(ctx, ns, alert.Name)
@@ -341,7 +312,8 @@ func (w *Writer) openOrCount(ctx context.Context, ns string, alert Alert, prompt
 		return nil, err
 	}
 	if target != nil {
-		return nil, w.countOn(ctx, ns, str(metadata(target), "name"), now)
+		w.covered(ns, target)
+		return nil, nil
 	}
 	name := IncidentName(alert.Name, at)
 	created, err := w.kube.Create(ctx, map[string]any{
@@ -353,12 +325,14 @@ func (w *Writer) openOrCount(ctx context.Context, ns string, alert Alert, prompt
 		if code(err) != 409 {
 			return nil, err
 		}
-		return nil, w.countOn(ctx, ns, name, now) // a concurrent firing created it this second
+		// A concurrent firing created it this second.
+		w.log.Info(fmt.Sprintf("[incident] %s/%s: covers the firing (created concurrently)", ns, name))
+		return nil, nil
 	}
 	// Unconditioned: the controller may already have touched the new object, and no other writer
 	// sets these fields yet.
 	if err := w.kube.PatchStatus(ctx, ns, name, map[string]any{
-		"status": map[string]any{"state": "Analyzing", "firings": 1, "lastFiredAt": now}}); err != nil {
+		"status": map[string]any{"state": "Analyzing"}}); err != nil {
 		return nil, err
 	}
 	w.log.Info(fmt.Sprintf("[incident] %s/%s: opened", ns, name))
@@ -460,7 +434,7 @@ func (w *Writer) Fire(ctx context.Context, alert Alert, records Records) {
 		}
 		return found, nil
 	}
-	created, err := w.openOrCount(ctx, ns, alert, prompt, w.now(), time.Duration(grace)*time.Second, rows)
+	created, err := w.openOrCover(ctx, ns, alert, prompt, w.now(), time.Duration(grace)*time.Second, rows)
 	w.mu.Lock()
 	delete(w.firing, key)
 	w.mu.Unlock()

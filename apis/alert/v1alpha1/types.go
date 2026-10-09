@@ -67,8 +67,7 @@ type AlertStatus struct {
 	// Phase is the reconcile phase: Pending, Invalid, Synced, SpecDrift or Error.
 	Phase string `json:"phase,omitempty"`
 
-	Error        string `json:"error,omitempty"`
-	LastSyncedAt string `json:"lastSyncedAt,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 // +kubebuilder:object:root=true

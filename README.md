@@ -6,7 +6,7 @@ Turns a firing Krateo observability **Alert** into **Incidents**, one per proble
 
 ```
 every 60 s, Alert is ALERT in HyperDX → krateo-alert-provider
-    → an open incident of the same problem? (one LLM call)        yes → status.firings++
+    → an open incident of the same problem? (one LLM call)        yes → nothing (it covers the firing)
                                                                   no  → new Incident → A2A call to incident-agent
                                                                         → status: analysis + howToFix scripts, state Open
 ```
@@ -15,8 +15,8 @@ every 60 s, Alert is ALERT in HyperDX → krateo-alert-provider
 The reconciler mirrors each Alert's HyperDX state every pass; a pass that finds it ALERT is a
 firing, and the handler:
 1. asks the comparison model, in one call over the Alert's open analyzed `Incident`s
-   (`observability.krateo.io/v1alpha1`), which one causes its current records, and counts the
-   firing on it,
+   (`observability.krateo.io/v1alpha1`), which one causes its current records; that one covers
+   the firing, which writes nothing,
 2. else creates one in state `Analyzing` and calls incident-agent over A2A (JSON-RPC
    `message/stream`) with the incident's prompt,
 3. writes the analysis and its `howToFix` scripts to the Incident's status, in state `Open`.

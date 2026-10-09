@@ -55,6 +55,7 @@ type writerCase struct {
 	t    *testing.T
 	kube *fakeKube
 	w    *Writer
+	log  *logLines
 
 	mu sync.Mutex
 	// rca are the RCA calls (prompt, contextID); answer is what the RCA returns, or rcaErr;
@@ -76,10 +77,10 @@ type writerCase struct {
 }
 
 func newCase(t *testing.T) *writerCase {
-	c := &writerCase{t: t, kube: newFakeKube(), answer: answer(block(how)),
+	c := &writerCase{t: t, kube: newFakeKube(), log: &logLines{}, answer: answer(block(how)),
 		records: []compare.Row{{Record: "Pod cd/fireworksapp-1: BackOff", Count: 3}}}
 	c.w = newWriter(Config{Namespace: ns, MaxConcurrentAnalyses: 2, FailedAnalysisHold: hold, MaxCandidates: compare.DefaultMaxCandidates},
-		c.kube, c.analyze, c.compare, logging.NewNopLogger())
+		c.kube, c.analyze, c.compare, c.log)
 	return c
 }
 
@@ -143,9 +144,34 @@ func (c *writerCase) analyzed(name, created, state string) {
 
 func st(obj map[string]any) map[string]any { return obj["status"].(map[string]any) }
 
-func num(v any) int {
-	n, _ := v.(json.Number).Int64()
-	return int(n)
+// logLines is a logger that keeps every Info message.
+type logLines struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *logLines) Info(msg string, _ ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, msg)
+}
+func (l *logLines) Debug(string, ...any)             {}
+func (l *logLines) Warn(string, ...any)              {}
+func (l *logLines) Error(error, string, ...any)      {}
+func (l *logLines) WithValues(...any) logging.Logger { return l }
+func (l *logLines) WithName(string) logging.Logger   { return l }
+
+// took is how many firings the incident name covered.
+func (c *writerCase) took(name string) int {
+	c.log.mu.Lock()
+	defer c.log.mu.Unlock()
+	n := 0
+	for _, l := range c.log.lines {
+		if strings.HasPrefix(l, "[incident] "+ns+"/"+name+": covers the firing") {
+			n++
+		}
+	}
+	return n
 }
 
 func eq(t *testing.T, what string, got, want any) {
@@ -178,8 +204,6 @@ func TestAFirstFiringOpensAnIncidentAndWritesItsAnalysis(t *testing.T) {
 	}
 	s := st(inc)
 	eq(t, "state", s["state"], "Open")
-	eq(t, "firings", num(s["firings"]), 1)
-	eq(t, "lastFiredAt", s["lastFiredAt"], spec["triggeredAt"])
 	eq(t, "howToFix", s["howToFix"], how)
 	eq(t, "rootCause", s["rootCause"].(map[string]any)["statement"], "chart 1.1.9 is missing")
 	if !strings.HasPrefix(s["report"].(string), "## Root cause") {
@@ -190,7 +214,7 @@ func TestAFirstFiringOpensAnIncidentAndWritesItsAnalysis(t *testing.T) {
 			t.Errorf("no %s", k)
 		}
 	}
-	for _, k := range []string{"error", "evidence"} { // the Incident CRD has no evidence field
+	for _, k := range []string{"error", "evidence", "firings", "lastFiredAt"} { // the Incident CRD has none of the last three
 		if _, ok := s[k]; ok {
 			t.Errorf("%s set: %v", k, s[k])
 		}
@@ -203,7 +227,7 @@ func TestItIsAnalyzingUntilTheAnalysisIsWritten(t *testing.T) {
 	c.fire(fireOpt{})
 	w := c.kube.statusWrites()
 	first, last := w[0], w[len(w)-1]
-	eq(t, "first", []any{first["state"], num(first["firings"])}, []any{"Analyzing", 1})
+	eq(t, "first", first, map[string]any{"state": "Analyzing"})
 	eq(t, "last state", last["state"], "Open")
 	if _, ok := last["howToFix"]; !ok { // Open and its scripts land in one write
 		t.Error("no howToFix in the last write")
@@ -229,20 +253,17 @@ func TestAWebhookNotificationOpensNothing(t *testing.T) {
 	eq(t, "calls", len(c.kube.calls), 0)
 }
 
-func TestTheSameProblemIsCountedOnItsIncidentAndRunsNoRCA(t *testing.T) {
+func TestTheSameProblemIsCoveredByItsIncidentAndWritesNothing(t *testing.T) {
 	c := newCase(t)
-	for _, state := range []string{"Open", "Verifying"} {
+	for i, state := range []string{"Open", "Verifying"} {
 		c.kube.clear()
 		c.analyzed(alertName+"-x", "", state)
 		c.match = alertName + "-x"
 		c.fire(fireOpt{})
-		inc := c.kube.only(ns)
-		eq(t, "firings", num(st(inc)["firings"]), 2)
-		if _, ok := st(inc)["lastFiredAt"]; !ok {
-			t.Error("no lastFiredAt")
-		}
-		eq(t, "state", st(inc)["state"], state)
+		eq(t, "covered", c.took(alertName+"-x"), i+1)
+		eq(t, "state", st(c.kube.only(ns))["state"], state)
 	}
+	eq(t, "status writes", len(c.kube.statusWrites()), 0)
 	eq(t, "rca", len(c.rca), 0)
 }
 
@@ -253,7 +274,7 @@ func TestADifferentProblemOpensASecondIncident(t *testing.T) {
 	eq(t, "compared", c.compared, [][]string{{alertName + "-x"}})
 	eq(t, "incidents", c.kube.count(), 2)
 	eq(t, "rca", len(c.rca), 1)
-	eq(t, "firings", num(st(c.kube.get(ns, alertName+"-x"))["firings"]), 1)
+	eq(t, "covered", c.took(alertName+"-x"), 0)
 }
 
 func TestAllOpenIncidentsAreComparedInOneCallAndTheMatchTakesTheFiring(t *testing.T) {
@@ -264,8 +285,8 @@ func TestAllOpenIncidentsAreComparedInOneCallAndTheMatchTakesTheFiring(t *testin
 	c.match = alertName + "-mid"
 	c.fire(fireOpt{})
 	eq(t, "compared", c.compared, [][]string{{alertName + "-new", alertName + "-mid", alertName + "-old"}})
-	eq(t, "mid", num(st(c.kube.get(ns, alertName+"-mid"))["firings"]), 2)
-	eq(t, "old", num(st(c.kube.get(ns, alertName+"-old"))["firings"]), 1)
+	eq(t, "mid", c.took(alertName+"-mid"), 1)
+	eq(t, "old", c.took(alertName+"-old"), 0)
 }
 
 func TestTheComparisonSeesTheAlertItsRecordsAndTheIncident(t *testing.T) {
@@ -305,7 +326,7 @@ func TestUnreadableRecordsAreNoVerdict(t *testing.T) {
 	c.fire(fireOpt{})
 	eq(t, "compared", len(c.compared), 0)
 	eq(t, "rca", len(c.rca), 0)
-	eq(t, "firings", num(st(c.kube.only(ns))["firings"]), 1)
+	eq(t, "covered", c.took(alertName+"-x"), 0)
 }
 
 func TestNoMatchingRecordsAreNoVerdict(t *testing.T) {
@@ -316,17 +337,17 @@ func TestNoMatchingRecordsAreNoVerdict(t *testing.T) {
 	eq(t, "compared", len(c.compared), 0)
 	eq(t, "rca", len(c.rca), 0)
 	eq(t, "incidents", c.kube.count(), 1)
-	eq(t, "firings", num(st(c.kube.only(ns))["firings"]), 1)
+	eq(t, "covered", c.took(alertName+"-x"), 0)
 }
 
-func TestNoMatchingRecordsStillCountOnAnIncidentWithoutAnAnalysis(t *testing.T) {
+func TestNoMatchingRecordsAreStillCoveredByAnIncidentWithoutAnAnalysis(t *testing.T) {
 	c := newCase(t)
 	c.analyzed(alertName+"-x", "2026-09-25T09:00:00Z", "")
 	c.kube.put(ns, alertName+"-a", alertName, seed{state: "Analyzing"})
 	c.records = nil
 	c.fire(fireOpt{})
 	eq(t, "compared", len(c.compared), 0)
-	eq(t, "firings", num(st(c.kube.get(ns, alertName+"-a"))["firings"]), 2)
+	eq(t, "covered", c.took(alertName+"-a"), 1)
 	eq(t, "incidents", c.kube.count(), 2)
 }
 
@@ -339,11 +360,11 @@ func TestRecordsAreNotReadWithNothingToCompare(t *testing.T) {
 
 func TestAnIncidentWithoutAnAnalysisTakesTheFiringUncompared(t *testing.T) {
 	c := newCase(t)
-	for _, state := range []string{"Analyzing", "Open", "Verifying"} {
+	for i, state := range []string{"Analyzing", "Open", "Verifying"} {
 		c.kube.clear()
-		c.kube.put(ns, alertName+"-x", alertName, seed{state: state, firings: 3})
+		c.kube.put(ns, alertName+"-x", alertName, seed{state: state})
 		c.fire(fireOpt{})
-		eq(t, state, num(st(c.kube.only(ns))["firings"]), 4)
+		eq(t, state, c.took(alertName+"-x"), i+1)
 	}
 	eq(t, "compared", len(c.compared), 0)
 	eq(t, "rca", len(c.rca), 0)
@@ -351,22 +372,22 @@ func TestAnIncidentWithoutAnAnalysisTakesTheFiringUncompared(t *testing.T) {
 
 func TestAFailedRCAWithErrorProseTakesTheFiringUncompared(t *testing.T) {
 	c := newCase(t)
-	c.kube.put(ns, alertName+"-x", alertName, seed{state: "Open", firings: 3})
+	c.kube.put(ns, alertName+"-x", alertName, seed{state: "Open"})
 	c.kube.writeStatus(ns, alertName+"-x", map[string]any{"report": "LLM error: 429 Too Many Requests",
 		"error": "The analysis returned no structured block, so the incident has no scripts to check or fix it."})
 	c.fire(fireOpt{})
-	eq(t, "firings", num(st(c.kube.only(ns))["firings"]), 4)
+	eq(t, "covered", c.took(alertName+"-x"), 1)
 	eq(t, "compared", len(c.compared), 0)
 	eq(t, "rca", len(c.rca), 0)
 }
 
 func TestAFailedRCAStopsTakingFiringsAfterTheHold(t *testing.T) {
 	c := newCase(t)
-	c.kube.put(ns, alertName+"-x", alertName, seed{state: "Open", firings: 3, completed: ago(hold + time.Minute)})
+	c.kube.put(ns, alertName+"-x", alertName, seed{state: "Open", completed: ago(hold + time.Minute)})
 	c.kube.writeStatus(ns, alertName+"-x", map[string]any{"error": "The analysis failed: 429"})
 	c.fire(fireOpt{})
 	x := st(c.kube.get(ns, alertName+"-x"))
-	eq(t, "firings", num(x["firings"]), 3)
+	eq(t, "covered", c.took(alertName+"-x"), 0)
 	eq(t, "state", x["state"], "Open")
 	eq(t, "incidents", c.kube.count(), 2)
 	eq(t, "rca", len(c.rca), 1)
@@ -374,18 +395,18 @@ func TestAFailedRCAStopsTakingFiringsAfterTheHold(t *testing.T) {
 
 func TestAFailedRCAInsideTheHoldStillTakesTheFiring(t *testing.T) {
 	c := newCase(t)
-	c.kube.put(ns, alertName+"-x", alertName, seed{state: "Open", firings: 3, completed: ago(hold - time.Minute)})
+	c.kube.put(ns, alertName+"-x", alertName, seed{state: "Open", completed: ago(hold - time.Minute)})
 	c.kube.writeStatus(ns, alertName+"-x", map[string]any{"error": "The analysis failed: 429"})
 	c.fire(fireOpt{})
-	eq(t, "firings", num(st(c.kube.only(ns))["firings"]), 4)
+	eq(t, "covered", c.took(alertName+"-x"), 1)
 	eq(t, "rca", len(c.rca), 0)
 }
 
 func TestAnIncidentStillAnalyzingTakesFiringsPastTheHold(t *testing.T) {
 	c := newCase(t)
-	c.kube.put(ns, alertName+"-x", alertName, seed{state: "Analyzing", firings: 3, created: ago(hold + time.Minute)})
+	c.kube.put(ns, alertName+"-x", alertName, seed{state: "Analyzing", created: ago(hold + time.Minute)})
 	c.fire(fireOpt{})
-	eq(t, "firings", num(st(c.kube.only(ns))["firings"]), 4)
+	eq(t, "covered", c.took(alertName+"-x"), 1)
 	eq(t, "rca", len(c.rca), 0)
 }
 
@@ -407,8 +428,8 @@ func TestAnEqualAnalyzedIncidentTakesTheFiringBeforeAnAnalyzingOne(t *testing.T)
 	c.kube.put(ns, alertName+"-y", alertName, seed{state: "Analyzing", created: "2026-09-25T10:00:00Z"})
 	c.match = alertName + "-x"
 	c.fire(fireOpt{})
-	eq(t, "x", num(st(c.kube.get(ns, alertName+"-x"))["firings"]), 2)
-	eq(t, "y", num(st(c.kube.get(ns, alertName+"-y"))["firings"]), 1)
+	eq(t, "x", c.took(alertName+"-x"), 1)
+	eq(t, "y", c.took(alertName+"-y"), 0)
 }
 
 func TestADifferentProblemWaitsOnAnIncidentStillAnalyzing(t *testing.T) {
@@ -416,17 +437,17 @@ func TestADifferentProblemWaitsOnAnIncidentStillAnalyzing(t *testing.T) {
 	c.analyzed(alertName+"-x", "2026-09-25T09:00:00Z", "")
 	c.kube.put(ns, alertName+"-y", alertName, seed{state: "Analyzing", created: "2026-09-25T10:00:00Z"})
 	c.fire(fireOpt{})
-	eq(t, "y", num(st(c.kube.get(ns, alertName+"-y"))["firings"]), 2)
+	eq(t, "y", c.took(alertName+"-y"), 1)
 	eq(t, "incidents", c.kube.count(), 2)
 	eq(t, "rca", len(c.rca), 0)
 }
 
-func TestNoVerdictOpensNothingAndCountsNothing(t *testing.T) {
+func TestNoVerdictOpensNothingAndCoversNothing(t *testing.T) {
 	c := newCase(t)
 	c.analyzed(alertName+"-x", "", "")
 	c.matchErr = &compare.NoVerdict{Reason: "rate-limited"}
 	c.fire(fireOpt{})
-	eq(t, "firings", num(st(c.kube.only(ns))["firings"]), 1)
+	eq(t, "covered", c.took(alertName+"-x"), 0)
 	eq(t, "rca", len(c.rca), 0)
 }
 
@@ -441,11 +462,11 @@ func TestAnEvaluationStillRunningSkipsTheAlertsNextFiring(t *testing.T) {
 		c.fire(fireOpt{}) // the next pass, while this comparison runs
 	}
 	c.fire(fireOpt{})
-	eq(t, "firings", num(st(c.kube.only(ns))["firings"]), 2)
+	eq(t, "covered", c.took(alertName+"-x"), 1)
 	eq(t, "firing", len(c.w.firing), 0)
 }
 
-func TestAnEndedIncidentDoesNotCountANewFiringOpensOne(t *testing.T) {
+func TestAnEndedIncidentDoesNotCoverANewFiringOpensOne(t *testing.T) {
 	c := newCase(t)
 	c.kube.put(ns, alertName+"-resolved", alertName, seed{state: "Resolved"})
 	c.kube.writeStatus(ns, alertName+"-resolved", map[string]any{"resolution": map[string]any{"by": "verify", "at": ago(time.Hour)}})
@@ -454,44 +475,26 @@ func TestAnEndedIncidentDoesNotCountANewFiringOpensOne(t *testing.T) {
 	eq(t, "incidents", c.kube.count(), 3)
 	eq(t, "rca", len(c.rca), 1)
 	eq(t, "compared", len(c.compared), 0)
-	eq(t, "resolved", num(st(c.kube.get(ns, alertName+"-resolved"))["firings"]), 1)
+	eq(t, "resolved", c.took(alertName+"-resolved"), 0)
 }
 
-func TestAnotherAlertsIncidentIsNotCounted(t *testing.T) {
+func TestAnotherAlertsIncidentDoesNotCover(t *testing.T) {
 	c := newCase(t)
 	c.kube.put(ns, "other-x", "other", seed{state: "Open"})
 	c.fire(fireOpt{})
 	eq(t, "incidents", c.kube.count(), 2)
 }
 
-func TestTheNewestUnanalyzedIncidentCounts(t *testing.T) {
+func TestTheNewestUnanalyzedIncidentCovers(t *testing.T) {
 	c := newCase(t)
 	c.kube.put(ns, alertName+"-old", alertName, seed{state: "Open", created: "2026-09-25T09:00:00Z"})
 	c.kube.put(ns, alertName+"-new", alertName, seed{state: "Open", created: "2026-09-25T10:00:00Z"})
 	c.fire(fireOpt{})
-	eq(t, "new", num(st(c.kube.get(ns, alertName+"-new"))["firings"]), 2)
-	eq(t, "old", num(st(c.kube.get(ns, alertName+"-old"))["firings"]), 1)
+	eq(t, "new", c.took(alertName+"-new"), 1)
+	eq(t, "old", c.took(alertName+"-old"), 0)
 }
 
-func TestAConcurrentStatusWriteIsNotLost(t *testing.T) {
-	c := newCase(t)
-	c.kube.put(ns, alertName+"-x", alertName, seed{state: "Open", firings: 2, rootCause: "c"})
-	c.match = alertName + "-x"
-	hit := false
-	c.kube.beforePatch = func(n, name string) {
-		if !hit {
-			hit = true
-			c.kube.writeStatus(n, name, map[string]any{"checks": []any{map[string]any{"script": "precondition", "exit": 1}}})
-		}
-	}
-	c.fire(fireOpt{})
-	s := st(c.kube.only(ns))
-	eq(t, "firings", num(s["firings"]), 3)
-	eq(t, "checks", s["checks"], []any{map[string]any{"script": "precondition", "exit": 1}})
-	eq(t, "compared", len(c.compared), 1) // the retry re-reads; it does not re-compare
-}
-
-func TestAConcurrentCreateIsCountedOn(t *testing.T) {
+func TestAConcurrentCreateCoversTheFiring(t *testing.T) {
 	c := newCase(t)
 	c.kube.beforeCreate = func(n, name string) {
 		if c.kube.count() == 0 {
@@ -499,7 +502,8 @@ func TestAConcurrentCreateIsCountedOn(t *testing.T) {
 		}
 	}
 	c.fire(fireOpt{})
-	eq(t, "firings", num(st(c.kube.only(ns))["firings"]), 2)
+	name := c.kube.only(ns)["metadata"].(map[string]any)["name"].(string)
+	eq(t, "covered", c.took(name), 1)
 	eq(t, "rca", len(c.rca), 0)
 }
 
@@ -524,13 +528,13 @@ func (c *writerCase) ended(name, state string, since time.Duration, created stri
 	c.kube.writeStatus(ns, name, map[string]any{"resolution": map[string]any{"by": by, "at": ago(since)}})
 }
 
-func TestInsideTheWindowTheFiringCountsOnTheResolvedIncident(t *testing.T) {
+func TestInsideTheWindowTheResolvedIncidentCoversTheFiring(t *testing.T) {
 	c := newCase(t)
 	c.ended(alertName+"-r", "Resolved", time.Minute, "")
 	c.fire(fireOpt{})
 	s := st(c.kube.only(ns))
 	eq(t, "state", s["state"], "Resolved")
-	eq(t, "firings", num(s["firings"]), 2)
+	eq(t, "covered", c.took(alertName+"-r"), 1)
 	eq(t, "rca", len(c.rca), 0)
 }
 
@@ -547,7 +551,7 @@ func TestAClosedIncidentNeverTakesAFiring(t *testing.T) {
 	c.ended(alertName+"-c", "Closed", 10*time.Second, "")
 	c.fire(fireOpt{})
 	eq(t, "incidents", c.kube.count(), 2)
-	eq(t, "closed", num(st(c.kube.get(ns, alertName+"-c"))["firings"]), 1)
+	eq(t, "closed", c.took(alertName+"-c"), 0)
 }
 
 func TestOnlyTheLatestIncidentGivesGrace(t *testing.T) {
@@ -563,28 +567,28 @@ func TestAnOpenIncidentTakesPrecedence(t *testing.T) {
 	c.kube.put(ns, alertName+"-o", alertName, seed{state: "Open", created: "2026-09-25T09:00:00Z"})
 	c.ended(alertName+"-r", "Resolved", 10*time.Second, "2026-09-25T10:00:00Z")
 	c.fire(fireOpt{})
-	eq(t, "o", num(st(c.kube.get(ns, alertName+"-o"))["firings"]), 2)
-	eq(t, "r", num(st(c.kube.get(ns, alertName+"-r"))["firings"]), 1)
+	eq(t, "o", c.took(alertName+"-o"), 1)
+	eq(t, "r", c.took(alertName+"-r"), 0)
 }
 
-func TestADifferentProblemInsideTheWindowCountsOnTheResolvedIncident(t *testing.T) {
+func TestADifferentProblemInsideTheWindowIsCoveredByTheResolvedIncident(t *testing.T) {
 	c := newCase(t)
 	c.analyzed(alertName+"-o", "2026-09-25T09:00:00Z", "")
 	c.ended(alertName+"-r", "Resolved", 10*time.Second, "2026-09-25T10:00:00Z")
 	c.fire(fireOpt{})
 	eq(t, "compared", c.compared, [][]string{{alertName + "-o"}})
-	eq(t, "r", num(st(c.kube.get(ns, alertName+"-r"))["firings"]), 2)
+	eq(t, "r", c.took(alertName+"-r"), 1)
 	eq(t, "incidents", c.kube.count(), 2)
 	eq(t, "rca", len(c.rca), 0)
 }
 
-func TestNoVerdictInsideTheWindowCountsOnTheResolvedIncident(t *testing.T) {
+func TestNoVerdictInsideTheWindowIsCoveredByTheResolvedIncident(t *testing.T) {
 	c := newCase(t)
 	c.analyzed(alertName+"-o", "2026-09-25T09:00:00Z", "")
 	c.ended(alertName+"-r", "Resolved", 10*time.Second, "2026-09-25T10:00:00Z")
 	c.matchErr = &compare.NoVerdict{Reason: "rate-limited"}
 	c.fire(fireOpt{})
-	eq(t, "r", num(st(c.kube.get(ns, alertName+"-r"))["firings"]), 2)
+	eq(t, "r", c.took(alertName+"-r"), 1)
 }
 
 func TestTheWindowIsTheAlertsInterval(t *testing.T) {
@@ -617,20 +621,6 @@ func TestTheBoundaryIsExclusive(t *testing.T) {
 			t.Errorf("%v is within", broken)
 		}
 	}
-}
-
-func TestAConcurrentWriteOnTheResolvedIncidentIsRetried(t *testing.T) {
-	c := newCase(t)
-	c.ended(alertName+"-r", "Resolved", time.Minute, "")
-	hit := false
-	c.kube.beforePatch = func(n, name string) {
-		if !hit {
-			hit = true
-			c.kube.writeStatus(n, name, map[string]any{"conditions": []any{map[string]any{"type": "Ready"}}})
-		}
-	}
-	c.fire(fireOpt{})
-	eq(t, "firings", num(st(c.kube.only(ns))["firings"]), 2)
 }
 
 // --- the analysis ---
@@ -816,11 +806,11 @@ func TestTwoSameDisplayNameAlertsGetTwoIncidents(t *testing.T) {
 	}
 }
 
-func TestAnAlertsFiringNeverCountsOnALookAlikeAlertsIncident(t *testing.T) {
+func TestALookAlikeAlertsIncidentNeverCoversAFiring(t *testing.T) {
 	c := newCase(t)
 	c.answer = "analysis"
 	c.kube.put(ns, "krateo-platform-crashloop-x", "krateo-platform-crashloop", seed{state: "Open"})
 	c.w.Fire(context.Background(), Alert{Namespace: ns, Alert: compare.Alert{Name: "sre-pod-crashloop", DisplayName: "Pod crash-looping", Where: "where-cluster", Threshold: "2"}}, c.recordsOf)
 	eq(t, "incidents", c.kube.count(), 2)
-	eq(t, "look-alike", num(st(c.kube.get(ns, "krateo-platform-crashloop-x"))["firings"]), 1)
+	eq(t, "look-alike", c.took("krateo-platform-crashloop-x"), 0)
 }

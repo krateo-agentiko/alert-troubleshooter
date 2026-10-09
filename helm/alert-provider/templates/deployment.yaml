@@ -1,5 +1,5 @@
 # krateo-alert-provider — the HyperDX-alert → Incident handler. Its reconciler mirrors each
-# Alert's HyperDX state every pass; a firing counts on the open incident the comparison model
+# Alert's HyperDX state every pass; a firing is covered by the open incident the comparison model
 # (config.compareModelConfig) names as its cause, or opens an Incident CR
 # (incident-controller's CRD) whose RCA the RCA agent (config.autopilotA2aUrl, incident-agent by
 # default) writes. HyperDX's webhook posts to
@@ -22,7 +22,7 @@ metadata:
   name: krateo-alert-provider
   namespace: krateo-system
 rules:
-  # the handler opens Incidents for firing alerts, counts firings and writes the RCA
+  # the handler opens Incidents for firing alerts and writes the RCA
   - apiGroups: ["observability.krateo.io"]
     resources: ["incidents", "incidents/status"]
     verbs: ["create", "get", "list", "patch", "update"]
