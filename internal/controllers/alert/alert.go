@@ -106,8 +106,7 @@ func Setup(mgr ctrl.Manager, o Options) error {
 }
 
 // changed lets through what a person changes: the spec, the annotations and the deletion. The
-// reconcile's own status writes change lastSyncedAt every pass and would otherwise requeue it at
-// once, forever.
+// reconcile's own status writes would otherwise requeue it at once.
 var changed = predicate.Funcs{
 	UpdateFunc: func(e event.UpdateEvent) bool {
 		o, n := e.ObjectOld, e.ObjectNew
@@ -215,7 +214,7 @@ func now() string { return pyfmt.Isoformat(time.Now()) }
 // is phase Error.
 func failed(a *v1alpha1.Alert, err error) error {
 	if httpx.Code(err) == 0 {
-		a.Status.Phase, a.Status.Error, a.Status.LastSyncedAt = v1alpha1.PhaseError, pyfmt.Cut(err.Error(), 300), now()
+		a.Status.Phase, a.Status.Error = v1alpha1.PhaseError, pyfmt.Cut(err.Error(), 300)
 	}
 	return err
 }
@@ -223,7 +222,7 @@ func failed(a *v1alpha1.Alert, err error) error {
 // specDrift records a push that failed: the live alert does not match the Alert. The state is
 // still mirrored, so a firing alert stays visible.
 func specDrift(a *v1alpha1.Alert, log logging.Logger, err error) error {
-	a.Status.Phase, a.Status.Error, a.Status.LastSyncedAt = v1alpha1.PhaseSpecDrift, pyfmt.Cut(err.Error(), 300), now()
+	a.Status.Phase, a.Status.Error = v1alpha1.PhaseSpecDrift, pyfmt.Cut(err.Error(), 300)
 	log.Info(fmt.Sprintf("[reconciler] Alert %s: spec push failed, phase=SpecDrift (%s)", a.Name, err))
 	return err
 }
@@ -252,7 +251,6 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	// finalizer to a new Alert, which reloads the object.
 	if why := Tautology(threshold(a.Spec), a.Spec.ThresholdType); why != "" {
 		if a.Status.Phase == v1alpha1.PhaseInvalid && a.Status.Error == why {
-			a.Status.LastSyncedAt = now()
 			return reconciler.ExternalObservation{ResourceExists: true, ResourceUpToDate: true}, nil
 		}
 		e.plan.invalid = why
@@ -315,7 +313,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	if d, _ := alert["dashboardId"].(string); d != "" {
 		a.Status.HyperdxDashboardID = d
 	}
-	a.Status.State, a.Status.LastSyncedAt = st, now()
+	a.Status.State = st
 	a.SetConditions(prv1.Available())
 
 	// `where` first: it decides what is counted, so pushing a threshold against a stale filter
@@ -393,7 +391,7 @@ func (e *external) Update(ctx context.Context, mg resource.Managed) error {
 		return errNotAlert
 	}
 	if why := e.plan.invalid; why != "" {
-		a.Status.Phase, a.Status.Error, a.Status.LastSyncedAt = v1alpha1.PhaseInvalid, why, now()
+		a.Status.Phase, a.Status.Error = v1alpha1.PhaseInvalid, why
 		e.log.Info(fmt.Sprintf("[reconciler] Alert %s refused: %s", a.Name, why))
 		return nil
 	}
@@ -421,7 +419,7 @@ func (e *external) create(ctx context.Context, a *v1alpha1.Alert) error {
 	st := pyfmt.Str(res["state"])
 	a.Status.HyperdxAlertID, a.Status.HyperdxDashboardID = pyfmt.Str(res["id"]), dash
 	a.Status.OkSince = OkSince(a.Status, st, now())
-	a.Status.State, a.Status.Phase, a.Status.LastSyncedAt = st, v1alpha1.PhaseSynced, now()
+	a.Status.State, a.Status.Phase = st, v1alpha1.PhaseSynced
 	a.SetConditions(prv1.Available())
 	e.log.Info(fmt.Sprintf("[reconciler] synced Alert %s -> hyperdx %s (%s)", a.Name, a.Status.HyperdxAlertID, st))
 	e.firings.start(a, e.source, st)
@@ -449,7 +447,7 @@ func (e *external) push(ctx context.Context, a *v1alpha1.Alert) error {
 		}
 		changed = append(changed, e.plan.drift...)
 	}
-	a.Status.Phase, a.Status.Error, a.Status.LastSyncedAt = v1alpha1.PhaseSynced, "", now()
+	a.Status.Phase, a.Status.Error = v1alpha1.PhaseSynced, ""
 	if len(changed) > 0 {
 		e.log.Info(fmt.Sprintf("[reconciler] Alert %s: pushed %s to hyperdx %s", a.Name, strings.Join(changed, ", "), e.plan.alertID))
 	}

@@ -34,3 +34,6 @@ timestamp: 2026-08-20T00:00:00Z
 ## 2026-10-06
 - The provider is a Go controller on Krateo's provider-runtime, in place of the Python reconcile loop; the chart's values and environment, the Alert and Incident contracts and the webhook are unchanged. `Alert.status.conditions` carries provider-runtime's `Ready` and `Synced`. The bootstrap Job runs `/bin/alert-provider bootstrap`. The Role grants `events.k8s.io` Events.
 - The GitHub repository is `krateo-platformops/alert-provider`; GitHub redirects the old `alert-troubleshooter` name.
+
+## 2026-10-09
+- A firing an incident covers writes nothing: `status.firings` and `status.lastFiredAt` are gone from the Incident, so an incident whose alert keeps firing is no longer rewritten every pass. The Alert's `status.lastSyncedAt` is gone too: an Alert whose HyperDX state does not change is not rewritten.

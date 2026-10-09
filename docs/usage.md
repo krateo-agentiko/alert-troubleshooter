@@ -24,8 +24,8 @@ ModelConfig `config.compareModelConfig`.
 
 ## Pause an alert
 
-`krateo.io/paused: "true"` on an `Alert` skips its firings: no incident opens and no firing is
-counted, so no comparison or RCA runs. The reconciler still pushes the spec to HyperDX and mirrors
+`krateo.io/paused: "true"` on an `Alert` skips its firings: no incident opens, so no comparison
+or RCA runs. The reconciler still pushes the spec to HyperDX and mirrors
 its state, so a paused alert can be corrected and watched before it is resumed. Incidents already
 open keep their checks, and an RCA already running finishes. Any other value, or no annotation,
 resumes it on the next pass.

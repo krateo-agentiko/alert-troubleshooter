@@ -62,7 +62,6 @@ func (f *fakeKube) bump(obj map[string]any) {
 
 type seed struct {
 	state, rootCause, created, completed string
-	firings                              int
 }
 
 // put seeds an Incident as the apiserver would hold it. Past Analyzing it carries the RCA's
@@ -70,13 +69,10 @@ type seed struct {
 func (f *fakeKube) put(ns, name, alert string, s seed) map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if s.firings == 0 {
-		s.firings = 1
-	}
 	if s.created == "" {
 		s.created = "2026-09-25T10:00:00Z"
 	}
-	st := map[string]any{"firings": s.firings}
+	st := map[string]any{}
 	if s.state != "" {
 		st["state"] = s.state
 	}

@@ -15,4 +15,4 @@ curl -XPOST http://krateo-alert-provider.krateo-system.svc:8080/webhook -d @aler
 `alert.json` is the body HyperDX sends: `alertName` is the notification title, a state emoji plus
 the HyperDX alert name, which is the `Alert` CR's `metadata.name`. The handler logs it and opens
 nothing: the reconciler's pass fires an `Alert` whose HyperDX state is ALERT, and that firing opens
-an `Incident` or counts on an open one (see [overview](../../docs/overview.md#incidents)).
+an `Incident` unless an open one covers it (see [overview](../../docs/overview.md#incidents)).

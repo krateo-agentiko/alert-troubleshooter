@@ -67,26 +67,23 @@ state but `Resolved` and `Closed`. For each firing, the incident writer (`intern
 1. lists the Incidents in the Alert's namespace labelled with the Alert's name;
 2. asks the comparison model, in one call over the open incidents that have an analysis (a root
    cause, or a report from an RCA that did not fail), which one causes the alert's current
-   records (see [Incident comparison](#incident-comparison)). That one takes the firing: one
-   more `status.firings`, a new `status.lastFiredAt`, no RCA. The incident controller writes the
-   same status, so the write is conditioned on the resourceVersion it read and retried on a
-   conflict;
-3. else counts the firing on the newest open incident without an analysis: one still
+   records (see [Incident comparison](#incident-comparison)). That one covers the firing: no RCA,
+   and no write, so an incident whose alert keeps firing is not rewritten every pass;
+3. else the newest open incident without an analysis covers the firing: one still
    `Analyzing`, or one whose RCA failed (whatever text the failure left in `status.report`) less
    than `config.failedAnalysisHold` (1800 s) after its `status.completedAt`. There is nothing to
    compare with, and a new incident would rerun the analysis. Past the hold, a failed incident
    takes no more firings and stays `Open` until a person closes it, so the next firing nothing
    else covers opens a new incident with a fresh RCA;
 4. else, if the alert's latest incident is `Resolved` and its `status.resolution.at` is less than
-   one `spec.interval` ago (5m when unset), counts the firing on that incident the same way, and it
+   one `spec.interval` ago (5m when unset), that incident covers the firing the same way, and it
    stays `Resolved`. A `where` alert keeps counting the rows from before the fix for its lookback
    window, and those firings belong to the incident the fix resolved. A `Closed` incident gets no
    such window: after a human close, the next firing opens a new one;
 5. else, when the comparison gave no verdict, records nothing: whether the firing is a new problem
    is unknown, and the next pass asks again;
 6. otherwise creates `<alert>-<yyyymmdd-hhmmss>` (the firing's UTC time) with the label and
-   `spec.alertRef`, `trigger: alert`, `prompt` and `triggeredAt`, in state `Analyzing` with
-   `firings: 1`;
+   `spec.alertRef`, `trigger: alert`, `prompt` and `triggeredAt`, in state `Analyzing`;
 7. runs the RCA on the incident's own kagent thread (contextId = uuid5 of its name), then writes
    the analysis, `howToFix` and `state: Open` in one status write.
 
